@@ -81,6 +81,7 @@ These coefficients are rough defaults, not hardcoded truth. They should remain e
 - Brand coefficient seed config: [config/paint-brands.yaml](/home/ein/projects/muralist/config/paint-brands.yaml)
 - Architecture decisions: [docs/ARCHITECTURE.md](/home/ein/projects/muralist/docs/ARCHITECTURE.md)
 - Security review: [docs/SECURITY_REVIEW.md](/home/ein/projects/muralist/docs/SECURITY_REVIEW.md)
+- Deployment and artifact flow: [docs/DEPLOYMENT.md](/home/ein/projects/muralist/docs/DEPLOYMENT.md)
 
 ## Development Standard For Round One
 
@@ -100,6 +101,12 @@ The current foundation has been verified locally with:
 - `npm run typecheck`
 - `npm run test`
 - `npm run build`
+
+GitHub Actions is configured to:
+
+- validate pull requests and `main`
+- upload API, web, and mobile build artifacts
+- deploy the web export to GitHub Pages from `main`
 
 The current dependency audit still reports unresolved high-severity issues in the Expo mobile toolchain and the current Fastify line. Those are tracked in the security review and should be resolved before any public release.
 
