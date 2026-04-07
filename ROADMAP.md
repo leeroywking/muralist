@@ -45,6 +45,8 @@ The app should not treat every shaded pixel as a separate paint color. It should
 - Show approximate image coverage percentage for each final color
 - Include a configurable paint organization system for major brands
 - Use brand-specific rough coverage coefficients in estimation logic
+- Require OAuth sign-in for all persistent user features
+- Allow guest mode with explicit no-persistence restrictions
 - Persist recent analyses per user device/account
 
 ### Should have
@@ -74,7 +76,7 @@ Use a shared backend and a shared mobile codebase where possible.
 - Mobile: React Native with Expo
 - Backend/API: TypeScript service
 - Storage: cloud object storage for uploaded images
-- Database: relational database for projects, analyses, and settings
+- Database: DynamoDB-first NoSQL model for projects, analyses, and preferences
 - Deployment target: one easily deployable fullstack stack with managed services where possible
 
 This gives the website and iOS/Android apps the same business logic and API while keeping UI implementation efficient.
@@ -95,11 +97,18 @@ The paint coefficient catalog should also be backend-owned so all clients use th
 
 ### Backend services
 
-- Auth service or managed auth provider
+- Auth service or managed auth provider with OAuth federation
 - Upload service for image ingestion
 - Analysis service for palette extraction and color reduction
 - Project service for saving and retrieving past results
 - Paint catalog service for brand coefficient lookup and future user-scoped overrides
+
+### Authentication model
+
+- OAuth-only for persistent users
+- Initial providers: Google, Apple, Facebook
+- Guest mode allowed for trial usage
+- Guest mode must not allow saving projects, personal paint libraries, or account-scoped settings
 
 ### Data model, initial
 
@@ -245,6 +254,7 @@ The first prototype should allow the user to select a brand profile and apply it
 - CI baseline
 - Deployment target defined for web, API, database, and storage
 - Brand coefficient config format defined
+- Security review completed and documented
 
 ### Acceptance criteria
 
@@ -270,6 +280,7 @@ The first prototype should allow the user to select a brand profile and apply it
 - Initial paint-brand coefficient config and lookup path
 - Unit tests for color reduction and coefficient loading
 - Integration tests for upload-to-result flow
+- Guest restrictions enforced on all persistent endpoints
 
 ### Acceptance criteria
 
@@ -373,6 +384,7 @@ The first prototype should allow the user to select a brand profile and apply it
 - Define project persistence endpoints
 - Add auth and authorization rules
 - Define paint brand profile endpoints and config loading
+- Define guest-session restrictions centrally
 
 ### Track E: Frontend and Mobile
 
@@ -388,6 +400,7 @@ The first prototype should allow the user to select a brand profile and apply it
 - Add unit tests
 - Add integration tests
 - Add linting and formatting checks
+- Perform security review and track mitigations
 - Ensure production builds pass for web, mobile, and backend
 - Publish a live demo tied to the repository
 - Document release and deployment steps in the README
