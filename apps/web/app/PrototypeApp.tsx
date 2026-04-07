@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useRef, useState, useTransition } from "react";
+import { ChangeEvent, useMemo, useRef, useState, useTransition } from "react";
 
 type BrandProfile = {
   id: string;
@@ -11,6 +11,7 @@ type BrandProfile = {
 };
 
 type PaletteColor = {
+  id: string;
   hex: string;
   rgb: [number, number, number];
   pixelCount: number;
@@ -21,6 +22,12 @@ type AnalysisResult = {
   width: number;
   height: number;
   colors: PaletteColor[];
+};
+
+type CanBreakdown = {
+  gallons: number;
+  label: string;
+  count: number;
 };
 
 const brandProfiles: BrandProfile[] = [
@@ -47,28 +54,53 @@ const brandProfiles: BrandProfile[] = [
   }
 ];
 
-const maxDimension = 280;
-const maxSamplePixels = 18000;
-const initialTarget = 10;
 const defaultBrand = brandProfiles[0]!;
+const maxDimension = 320;
+const maxSamplePixels = 22000;
+const paletteLimit = 50;
+const canSizes: CanBreakdown[] = [
+  { gallons: 5, label: "5 gal bucket", count: 0 },
+  { gallons: 1, label: "1 gal can", count: 0 },
+  { gallons: 0.25, label: "1 qt can", count: 0 }
+];
 
 export function PrototypeApp() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [fileName, setFileName] = useState<string>("");
-  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
-  const [targetColors, setTargetColors] = useState(initialTarget);
+  const [fileName, setFileName] = useState("");
+  const [sourceAnalysis, setSourceAnalysis] = useState<AnalysisResult | null>(null);
+  const [paletteColors, setPaletteColors] = useState<PaletteColor[]>([]);
   const [selectedBrandId, setSelectedBrandId] = useState(defaultBrand.id);
-  const [wallArea, setWallArea] = useState("250");
+  const [wallLength, setWallLength] = useState("25");
+  const [wallWidth, setWallWidth] = useState("10");
   const [coats, setCoats] = useState(String(defaultBrand.coats));
   const [wastePercent, setWastePercent] = useState("10");
+  const [selectedColorIds, setSelectedColorIds] = useState<string[]>([]);
+  const [mergeKeeperId, setMergeKeeperId] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const selectedBrand = brandProfiles.find((brand) => brand.id === selectedBrandId) ?? defaultBrand;
-  const parsedArea = Number(wallArea);
+  const parsedLength = Number(wallLength);
+  const parsedWidth = Number(wallWidth);
   const parsedCoats = Number(coats);
   const parsedWaste = Number(wastePercent) / 100;
+  const wallArea = parsedLength * parsedWidth;
+
+  const estimateReady =
+    paletteColors.length > 0 &&
+    Number.isFinite(parsedLength) &&
+    parsedLength > 0 &&
+    Number.isFinite(parsedWidth) &&
+    parsedWidth > 0 &&
+    Number.isFinite(parsedCoats) &&
+    parsedCoats > 0 &&
+    Number.isFinite(parsedWaste) &&
+    parsedWaste >= 0;
+
+  const mergeOptions = useMemo(() => {
+    return paletteColors.filter((color) => selectedColorIds.includes(color.id));
+  }, [paletteColors, selectedColorIds]);
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -91,38 +123,20 @@ export function PrototypeApp() {
     setPreviewUrl(nextPreviewUrl);
     setFileName(file.name);
     setError(null);
+    setSelectedColorIds([]);
+    setMergeKeeperId("");
 
     startTransition(async () => {
       try {
-        const result = await analyzeImage(file, targetColors, canvasRef.current);
-        setAnalysis(result);
+        const result = await analyzeImage(file, canvasRef.current);
+        setSourceAnalysis(result);
+        setPaletteColors(result.colors);
       } catch (analysisError) {
-        setAnalysis(null);
+        setSourceAnalysis(null);
+        setPaletteColors([]);
         setError(analysisError instanceof Error ? analysisError.message : "Image analysis failed.");
       }
     });
-  }
-
-  function handleTargetChange(nextTarget: number) {
-    setTargetColors(nextTarget);
-
-    if (!previewUrl) {
-      return;
-    }
-
-    const previewImage = new Image();
-    previewImage.onload = () => {
-      startTransition(async () => {
-        try {
-          const result = analyzeLoadedImage(previewImage, nextTarget, canvasRef.current);
-          setAnalysis(result);
-          setError(null);
-        } catch (analysisError) {
-          setError(analysisError instanceof Error ? analysisError.message : "Image analysis failed.");
-        }
-      });
-    };
-    previewImage.src = previewUrl;
   }
 
   function handleBrandChange(nextBrandId: string) {
@@ -134,14 +148,57 @@ export function PrototypeApp() {
     }
   }
 
-  const estimateReady =
-    analysis !== null &&
-    Number.isFinite(parsedArea) &&
-    parsedArea > 0 &&
-    Number.isFinite(parsedCoats) &&
-    parsedCoats > 0 &&
-    Number.isFinite(parsedWaste) &&
-    parsedWaste >= 0;
+  function toggleColorSelection(colorId: string) {
+    setSelectedColorIds((current) => {
+      if (current.includes(colorId)) {
+        const nextSelected = current.filter((entry) => entry !== colorId);
+
+        if (mergeKeeperId === colorId) {
+          setMergeKeeperId(nextSelected[0] ?? "");
+        }
+
+        return nextSelected;
+      }
+
+      const nextSelected = [...current, colorId];
+
+      if (!mergeKeeperId) {
+        setMergeKeeperId(colorId);
+      }
+
+      return nextSelected;
+    });
+  }
+
+  function mergeSelectedColors() {
+    if (selectedColorIds.length < 2 || !mergeKeeperId) {
+      return;
+    }
+
+    const selectedColors = paletteColors.filter((color) => selectedColorIds.includes(color.id));
+    const keeper = selectedColors.find((color) => color.id === mergeKeeperId);
+
+    if (!keeper) {
+      return;
+    }
+
+    const mergedPixelCount = selectedColors.reduce((sum, color) => sum + color.pixelCount, 0);
+    const totalPixels = paletteColors.reduce((sum, color) => sum + color.pixelCount, 0);
+    const mergedKeeper: PaletteColor = {
+      ...keeper,
+      pixelCount: mergedPixelCount,
+      coveragePercent: (mergedPixelCount / totalPixels) * 100
+    };
+
+    const nextPalette = paletteColors
+      .filter((color) => !selectedColorIds.includes(color.id) || color.id === mergeKeeperId)
+      .map((color) => (color.id === mergeKeeperId ? mergedKeeper : color))
+      .sort((left, right) => right.pixelCount - left.pixelCount);
+
+    setPaletteColors(rebalanceCoverage(nextPalette));
+    setSelectedColorIds([]);
+    setMergeKeeperId("");
+  }
 
   return (
     <main className="page-shell">
@@ -150,18 +207,18 @@ export function PrototypeApp() {
           <p className="eyebrow">Paint Estimator</p>
           <h1>Muralist</h1>
           <p className="lede">
-            Upload mural artwork, reduce close shades into a practical paint list,
-            and estimate gallons by brand coverage.
+            Upload mural artwork, capture the dominant paint colors, then merge chips into a practical
+            field palette and estimate real can sizes.
           </p>
           <p className="hero-note">
-            Close colors are merged on purpose so the final palette stays usable in the field.
+            This workflow starts broad, then lets you decide which close shades should collapse into a single paint choice.
           </p>
         </div>
         <div className="hero-panel">
           <div className="metrics">
             <div>
-              <span className="metric-label">Palette target</span>
-              <strong>{targetColors} colors</strong>
+              <span className="metric-label">Palette capture</span>
+              <strong>Top {paletteLimit} colors max</strong>
             </div>
             <div>
               <span className="metric-label">Brand default</span>
@@ -179,7 +236,7 @@ export function PrototypeApp() {
         <section className="panel">
           <div className="section-head">
             <h2>1. Upload Artwork</h2>
-            <p>Choose an image and generate a reduced paint palette.</p>
+            <p>Choose an image and capture the strongest paint candidates from it.</p>
           </div>
 
           <label className="upload-zone">
@@ -195,36 +252,17 @@ export function PrototypeApp() {
             </span>
           </label>
 
-          <div className="control-stack">
-            <label className="field">
-              <span>Target palette size</span>
-              <input
-                type="range"
-                min="4"
-                max="20"
-                value={targetColors}
-                onChange={(event) => handleTargetChange(Number(event.target.value))}
-              />
-            </label>
-
-            <div className="field-inline">
-              <span className="field-note">
-                Lower values merge harder. Higher values preserve more accents.
-              </span>
-            </div>
-          </div>
-
           {error ? <p className="status error">{error}</p> : null}
-          {isPending ? <p className="status">Analyzing image and merging close shades...</p> : null}
+          {isPending ? <p className="status">Capturing dominant colors from the artwork...</p> : null}
 
           {previewUrl ? (
             <div className="preview-frame">
               <img alt={fileName || "Uploaded mural preview"} className="preview-image" src={previewUrl} />
               <div className="preview-meta">
                 <strong>{fileName}</strong>
-                {analysis ? (
+                {sourceAnalysis ? (
                   <span>
-                    {analysis.width} × {analysis.height} analyzed
+                    {sourceAnalysis.width} × {sourceAnalysis.height} analyzed
                   </span>
                 ) : null}
               </div>
@@ -239,7 +277,7 @@ export function PrototypeApp() {
         <section className="panel">
           <div className="section-head">
             <h2>2. Estimate Paint</h2>
-            <p>Use rough brand coefficients and wall area to turn color coverage into gallons.</p>
+            <p>Use wall dimensions and brand coverage assumptions to get can-size recommendations.</p>
           </div>
 
           <div className="form-grid">
@@ -255,12 +293,22 @@ export function PrototypeApp() {
             </label>
 
             <label className="field">
-              <span>Wall area (sq ft)</span>
+              <span>Length (ft)</span>
               <input
                 type="number"
                 min="1"
-                value={wallArea}
-                onChange={(event) => setWallArea(event.target.value)}
+                value={wallLength}
+                onChange={(event) => setWallLength(event.target.value)}
+              />
+            </label>
+
+            <label className="field">
+              <span>Width (ft)</span>
+              <input
+                type="number"
+                min="1"
+                value={wallWidth}
+                onChange={(event) => setWallWidth(event.target.value)}
               />
             </label>
 
@@ -274,7 +322,7 @@ export function PrototypeApp() {
               />
             </label>
 
-            <label className="field">
+            <label className="field field-wide">
               <span>Waste / overage (%)</span>
               <input
                 type="number"
@@ -287,12 +335,12 @@ export function PrototypeApp() {
 
           <div className="estimate-banner">
             <div>
-              <span className="metric-label">Current coefficient</span>
-              <strong>{selectedBrand.coverage} sq ft per gallon</strong>
+              <span className="metric-label">Wall area</span>
+              <strong>{Number.isFinite(wallArea) && wallArea > 0 ? `${wallArea.toFixed(1)} sq ft` : "--"}</strong>
             </div>
             <div>
-              <span className="metric-label">Default coats</span>
-              <strong>{selectedBrand.coats}</strong>
+              <span className="metric-label">Minimum can</span>
+              <strong>1 qt</strong>
             </div>
           </div>
         </section>
@@ -300,51 +348,107 @@ export function PrototypeApp() {
 
       <section className="panel results-panel">
         <div className="section-head">
-          <h2>3. Reduced Palette</h2>
+          <h2>3. Paint Palette</h2>
           <p>
-            Similar shades are merged intentionally. Treat these as practical paint choices, not
-            a pixel-perfect digital palette.
+            Start from the strongest colors in the artwork, then select multiple chips to merge them into one keeper color.
           </p>
         </div>
 
-        {analysis ? (
+        {paletteColors.length > 0 ? (
           <>
             <div className="summary-strip">
               <div>
-                <span className="metric-label">Final colors</span>
-                <strong>{analysis.colors.length}</strong>
+                <span className="metric-label">Captured colors</span>
+                <strong>{paletteColors.length}</strong>
               </div>
               <div>
-                <span className="metric-label">Primary brand</span>
-                <strong>{selectedBrand.name}</strong>
+                <span className="metric-label">Selected to merge</span>
+                <strong>{selectedColorIds.length}</strong>
               </div>
               <div>
-                <span className="metric-label">Estimated total gallons</span>
-                <strong>{estimateReady ? formatGallons(getTotalGallons(analysis.colors, parsedArea, parsedCoats, parsedWaste, selectedBrand.coverage)) : "--"}</strong>
+                <span className="metric-label">Estimated total</span>
+                <strong>{estimateReady ? formatCanPlan(getTotalCanPlan(paletteColors, wallArea, parsedCoats, parsedWaste, selectedBrand.coverage)) : "--"}</strong>
               </div>
             </div>
 
+            <div className="merge-toolbar">
+              <div className="merge-toolbar-copy">
+                <strong>Selected chips</strong>
+                <span>Pick 2 or more colors, choose the keeper chip, then merge them.</span>
+              </div>
+              <div className="merge-controls">
+                <label className="field merge-field">
+                  <span>Keep this color</span>
+                  <select
+                    value={mergeKeeperId}
+                    disabled={mergeOptions.length < 2}
+                    onChange={(event) => setMergeKeeperId(event.target.value)}
+                  >
+                    <option value="">Choose keeper</option>
+                    {mergeOptions.map((color) => (
+                      <option key={color.id} value={color.id}>
+                        {color.hex}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="merge-button"
+                  disabled={mergeOptions.length < 2 || !mergeKeeperId}
+                  onClick={mergeSelectedColors}
+                  type="button"
+                >
+                  Merge Selected
+                </button>
+              </div>
+            </div>
+
+            <div className="selection-strip">
+              {selectedColorIds.length > 0 ? (
+                paletteColors
+                  .filter((color) => selectedColorIds.includes(color.id))
+                  .map((color) => (
+                    <button
+                      className={`selected-chip ${mergeKeeperId === color.id ? "keeper-chip" : ""}`}
+                      key={color.id}
+                      onClick={() => setMergeKeeperId(color.id)}
+                      type="button"
+                    >
+                      <span className="selected-chip-swatch" style={{ backgroundColor: color.hex }} />
+                      <span>{color.hex}</span>
+                      <small>{mergeKeeperId === color.id ? "keeper" : "selected"}</small>
+                    </button>
+                  ))
+              ) : (
+                <div className="empty-selection">Select chips below to start a manual merge.</div>
+              )}
+            </div>
+
             <div className="palette-grid">
-              {analysis.colors.map((color, index) => {
-                const estimatedGallons = estimateReady
-                  ? getColorGallons(color.coveragePercent, parsedArea, parsedCoats, parsedWaste, selectedBrand.coverage)
+              {paletteColors.map((color) => {
+                const isSelected = selectedColorIds.includes(color.id);
+                const canPlan = estimateReady
+                  ? getColorCanPlan(color.coveragePercent, wallArea, parsedCoats, parsedWaste, selectedBrand.coverage)
                   : null;
 
                 return (
-                  <article className="swatch-card" key={`${color.hex}-${index}`}>
-                    <div className="swatch" style={{ backgroundColor: color.hex }} />
+                  <article className={`swatch-card ${isSelected ? "swatch-card-selected" : ""}`} key={color.id}>
+                    <button
+                      className="swatch-toggle"
+                      onClick={() => toggleColorSelection(color.id)}
+                      type="button"
+                    >
+                      <div className="swatch" style={{ backgroundColor: color.hex }} />
+                    </button>
                     <div className="swatch-body">
                       <div className="swatch-title-row">
                         <strong>{color.hex}</strong>
                         <span>{color.coveragePercent.toFixed(1)}%</span>
                       </div>
-                      <p>
-                        Approx. {color.pixelCount.toLocaleString()} sampled pixels collapsed into this
-                        working color.
-                      </p>
+                      <p>{color.pixelCount.toLocaleString()} sampled pixels in this working color.</p>
                       <div className="estimate-row">
                         <span>{selectedBrand.name}</span>
-                        <strong>{estimatedGallons === null ? "--" : formatGallons(estimatedGallons)}</strong>
+                        <strong>{canPlan ? formatCanPlan(canPlan) : "--"}</strong>
                       </div>
                     </div>
                   </article>
@@ -354,7 +458,7 @@ export function PrototypeApp() {
           </>
         ) : (
           <div className="empty-results">
-            Upload an image to see the reduced palette and per-color paint estimates.
+            Upload an image to capture the strongest colors and build your paint plan.
           </div>
         )}
       </section>
@@ -364,18 +468,18 @@ export function PrototypeApp() {
   );
 }
 
-async function analyzeImage(file: File, targetColors: number, canvas: HTMLCanvasElement | null) {
+async function analyzeImage(file: File, canvas: HTMLCanvasElement | null) {
   const imageUrl = URL.createObjectURL(file);
 
   try {
     const image = await loadImage(imageUrl);
-    return analyzeLoadedImage(image, targetColors, canvas);
+    return analyzeLoadedImage(image, canvas);
   } finally {
     URL.revokeObjectURL(imageUrl);
   }
 }
 
-function analyzeLoadedImage(image: HTMLImageElement, targetColors: number, canvas: HTMLCanvasElement | null): AnalysisResult {
+function analyzeLoadedImage(image: HTMLImageElement, canvas: HTMLCanvasElement | null): AnalysisResult {
   if (!canvas) {
     throw new Error("Canvas is unavailable.");
   }
@@ -401,23 +505,33 @@ function analyzeLoadedImage(image: HTMLImageElement, targetColors: number, canva
   }
 
   const initialClusters = bucketPixels(sampled);
-  const reducedClusters = mergeClusters(initialClusters, targetColors);
-  const totalPixels = reducedClusters.reduce((sum, cluster) => sum + cluster.pixelCount, 0);
-
-  const colors = reducedClusters
-    .sort((left, right) => right.pixelCount - left.pixelCount)
-    .map((cluster) => ({
-      hex: rgbToHex(cluster.rgb),
-      rgb: cluster.rgb,
-      pixelCount: cluster.pixelCount,
-      coveragePercent: (cluster.pixelCount / totalPixels) * 100
-    }));
+  const colors = rebalanceCoverage(
+    initialClusters
+      .sort((left, right) => right.pixelCount - left.pixelCount)
+      .slice(0, paletteLimit)
+      .map((cluster, index) => ({
+        id: `color-${index + 1}`,
+        hex: rgbToHex(cluster.rgb),
+        rgb: cluster.rgb,
+        pixelCount: cluster.pixelCount,
+        coveragePercent: 0
+      }))
+  );
 
   return {
     width,
     height,
     colors
   };
+}
+
+function rebalanceCoverage(colors: PaletteColor[]) {
+  const totalPixels = colors.reduce((sum, color) => sum + color.pixelCount, 0);
+
+  return colors.map((color) => ({
+    ...color,
+    coveragePercent: totalPixels > 0 ? (color.pixelCount / totalPixels) * 100 : 0
+  }));
 }
 
 function loadImage(src: string) {
@@ -485,85 +599,11 @@ function bucketPixels(pixels: [number, number, number][]) {
     });
   }
 
-  return Array.from(buckets.values()).sort((left, right) => right.pixelCount - left.pixelCount);
-}
-
-function mergeClusters(clusters: Cluster[], targetColors: number) {
-  const working = clusters.slice(0, Math.max(targetColors * 6, targetColors));
-  const threshold = getMergeThreshold(targetColors);
-
-  let merged = true;
-  while (merged) {
-    merged = false;
-
-    for (let leftIndex = 0; leftIndex < working.length; leftIndex += 1) {
-      for (let rightIndex = leftIndex + 1; rightIndex < working.length; rightIndex += 1) {
-        const leftCluster = working[leftIndex]!;
-        const rightCluster = working[rightIndex]!;
-        const distance = colorDistance(leftCluster.rgb, rightCluster.rgb);
-        const lowCoverageBias = Math.min(6, 100 / Math.max(rightCluster.pixelCount, 1));
-
-        if (distance <= threshold + lowCoverageBias) {
-          working[leftIndex] = {
-            rgb: weightedAverage(
-              leftCluster.rgb,
-              leftCluster.pixelCount,
-              rightCluster.rgb,
-              rightCluster.pixelCount
-            ),
-            pixelCount: leftCluster.pixelCount + rightCluster.pixelCount
-          };
-          working.splice(rightIndex, 1);
-          merged = true;
-          break;
-        }
-      }
-
-      if (merged) {
-        break;
-      }
-    }
-  }
-
-  while (working.length > targetColors) {
-    let bestLeft = 0;
-    let bestRight = 1;
-    let bestDistance = Number.POSITIVE_INFINITY;
-
-    for (let leftIndex = 0; leftIndex < working.length; leftIndex += 1) {
-      for (let rightIndex = leftIndex + 1; rightIndex < working.length; rightIndex += 1) {
-        const leftCluster = working[leftIndex]!;
-        const rightCluster = working[rightIndex]!;
-        const distance = colorDistance(leftCluster.rgb, rightCluster.rgb);
-
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestLeft = leftIndex;
-          bestRight = rightIndex;
-        }
-      }
-    }
-
-    const leftCluster = working[bestLeft]!;
-    const rightCluster = working[bestRight]!;
-
-    working[bestLeft] = {
-      rgb: weightedAverage(
-        leftCluster.rgb,
-        leftCluster.pixelCount,
-        rightCluster.rgb,
-        rightCluster.pixelCount
-      ),
-      pixelCount: leftCluster.pixelCount + rightCluster.pixelCount
-    };
-    working.splice(bestRight, 1);
-  }
-
-  return working;
+  return Array.from(buckets.values());
 }
 
 function quantizeChannel(channel: number) {
-  return Math.round(channel / 16) * 16;
+  return Math.round(channel / 12) * 12;
 }
 
 function weightedAverage(
@@ -581,36 +621,11 @@ function weightedAverage(
   ];
 }
 
-function colorDistance(left: [number, number, number], right: [number, number, number]) {
-  const rMean = (left[0] + right[0]) / 2;
-  const r = left[0] - right[0];
-  const g = left[1] - right[1];
-  const b = left[2] - right[2];
-
-  return Math.sqrt((2 + rMean / 256) * r * r + 4 * g * g + (2 + (255 - rMean) / 256) * b * b);
-}
-
-function getMergeThreshold(targetColors: number) {
-  if (targetColors <= 6) {
-    return 38;
-  }
-
-  if (targetColors <= 10) {
-    return 30;
-  }
-
-  if (targetColors <= 14) {
-    return 24;
-  }
-
-  return 20;
-}
-
 function rgbToHex([red, green, blue]: [number, number, number]) {
   return `#${[red, green, blue].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
 }
 
-function getColorGallons(
+function getColorCanPlan(
   coveragePercent: number,
   areaSqFt: number,
   coats: number,
@@ -618,27 +633,55 @@ function getColorGallons(
   coverageSqFtPerGallon: number
 ) {
   const adjustedArea = areaSqFt * (coveragePercent / 100);
-  return roundToTenths((adjustedArea * coats * (1 + wasteFactor)) / coverageSqFtPerGallon);
+  const requiredGallons = (adjustedArea * coats * (1 + wasteFactor)) / coverageSqFtPerGallon;
+  return buildCanPlan(requiredGallons);
 }
 
-function getTotalGallons(
+function getTotalCanPlan(
   colors: PaletteColor[],
   areaSqFt: number,
   coats: number,
   wasteFactor: number,
   coverageSqFtPerGallon: number
 ) {
-  return roundToTenths(
-    colors.reduce((sum, color) => {
-      return sum + getColorGallons(color.coveragePercent, areaSqFt, coats, wasteFactor, coverageSqFtPerGallon);
-    }, 0)
-  );
+  const totalGallons = colors.reduce((sum, color) => {
+    return sum + (areaSqFt * (color.coveragePercent / 100) * coats * (1 + wasteFactor)) / coverageSqFtPerGallon;
+  }, 0);
+
+  return buildCanPlan(totalGallons);
+}
+
+function buildCanPlan(requiredGallons: number) {
+  const minimumGallons = Math.max(0.25, requiredGallons);
+  let remaining = minimumGallons;
+  const plan = canSizes.map((size) => ({ ...size }));
+
+  for (const entry of plan) {
+    if (entry.gallons === 0.25) {
+      entry.count = Math.ceil(remaining / entry.gallons);
+      remaining = 0;
+      break;
+    }
+
+    entry.count = Math.floor(remaining / entry.gallons);
+    remaining -= entry.count * entry.gallons;
+  }
+
+  if (remaining > 0) {
+    plan[plan.length - 1]!.count += 1;
+  }
+
+  return {
+    requiredGallons: minimumGallons,
+    packages: plan.filter((entry) => entry.count > 0)
+  };
+}
+
+function formatCanPlan(plan: { requiredGallons: number; packages: CanBreakdown[] }) {
+  const packageLabel = plan.packages.map((entry) => `${entry.count} × ${entry.label}`).join(" + ");
+  return `${packageLabel} (${roundToTenths(plan.requiredGallons).toFixed(1)} gal est.)`;
 }
 
 function roundToTenths(value: number) {
   return Math.round(value * 10) / 10;
-}
-
-function formatGallons(value: number) {
-  return `${value.toFixed(1)} gal`;
 }
