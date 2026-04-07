@@ -192,7 +192,7 @@ These coefficients are approximation inputs only. They should be stored in a con
 ### Initial approximation guidance
 
 - Sherwin-Williams: assume roughly `350-400` square feet per gallon, default `375`
-- Valspar at Lowe's: assume roughly `400-450` square feet per gallon, default `425`
+- Valspar at Lowe's: assume roughly `400` square feet per gallon, default `400`
 - Behr at Home Depot: assume roughly `250-400` square feet per gallon, default `325`
 
 ### Estimation usage
