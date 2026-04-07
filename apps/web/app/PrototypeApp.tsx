@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useMemo, useRef, useState, useTransition } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState, useTransition } from "react";
 
 type BrandProfile = {
   id: string;
@@ -22,6 +22,18 @@ type AnalysisResult = {
   width: number;
   height: number;
   colors: PaletteColor[];
+};
+
+type SavedMergePlan = {
+  savedAt: string;
+  fileName: string;
+  selectedBrandId: string;
+  wallLength: string;
+  wallWidth: string;
+  coats: string;
+  wastePercent: string;
+  sourceAnalysis: AnalysisResult | null;
+  paletteColors: PaletteColor[];
 };
 
 type CanBreakdown = {
@@ -58,6 +70,7 @@ const defaultBrand = brandProfiles[0]!;
 const maxDimension = 320;
 const maxSamplePixels = 22000;
 const paletteLimit = 50;
+const savedMergePlanKey = "muralist.saved-merge-plan";
 const canSizes: CanBreakdown[] = [
   { gallons: 5, label: "5 gal bucket", count: 0 },
   { gallons: 1, label: "1 gal can", count: 0 },
@@ -77,6 +90,8 @@ export function PrototypeApp() {
   const [wastePercent, setWastePercent] = useState("10");
   const [selectedColorIds, setSelectedColorIds] = useState<string[]>([]);
   const [mergeKeeperId, setMergeKeeperId] = useState<string>("");
+  const [savedMergePlan, setSavedMergePlan] = useState<SavedMergePlan | null>(null);
+  const [saveMessage, setSaveMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -102,6 +117,24 @@ export function PrototypeApp() {
     return paletteColors.filter((color) => selectedColorIds.includes(color.id));
   }, [paletteColors, selectedColorIds]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const saved = window.localStorage.getItem(savedMergePlanKey);
+
+    if (!saved) {
+      return;
+    }
+
+    try {
+      setSavedMergePlan(JSON.parse(saved) as SavedMergePlan);
+    } catch {
+      window.localStorage.removeItem(savedMergePlanKey);
+    }
+  }, []);
+
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
 
@@ -123,6 +156,7 @@ export function PrototypeApp() {
     setPreviewUrl(nextPreviewUrl);
     setFileName(file.name);
     setError(null);
+    setSaveMessage("");
     setSelectedColorIds([]);
     setMergeKeeperId("");
 
@@ -198,6 +232,47 @@ export function PrototypeApp() {
     setPaletteColors(rebalanceCoverage(nextPalette));
     setSelectedColorIds([]);
     setMergeKeeperId("");
+    setSaveMessage("");
+  }
+
+  function saveMergedChoices() {
+    if (typeof window === "undefined" || paletteColors.length === 0) {
+      return;
+    }
+
+    const nextSavedPlan: SavedMergePlan = {
+      savedAt: new Date().toISOString(),
+      fileName,
+      selectedBrandId,
+      wallLength,
+      wallWidth,
+      coats,
+      wastePercent,
+      sourceAnalysis,
+      paletteColors
+    };
+
+    window.localStorage.setItem(savedMergePlanKey, JSON.stringify(nextSavedPlan));
+    setSavedMergePlan(nextSavedPlan);
+    setSaveMessage("Merged choices saved on this device.");
+  }
+
+  function restoreSavedChoices() {
+    if (!savedMergePlan) {
+      return;
+    }
+
+    setFileName(savedMergePlan.fileName);
+    setSelectedBrandId(savedMergePlan.selectedBrandId);
+    setWallLength(savedMergePlan.wallLength);
+    setWallWidth(savedMergePlan.wallWidth);
+    setCoats(savedMergePlan.coats);
+    setWastePercent(savedMergePlan.wastePercent);
+    setSourceAnalysis(savedMergePlan.sourceAnalysis);
+    setPaletteColors(savedMergePlan.paletteColors);
+    setSelectedColorIds([]);
+    setMergeKeeperId("");
+    setSaveMessage("Saved merged choices restored.");
   }
 
   return (
@@ -375,6 +450,12 @@ export function PrototypeApp() {
               <div className="merge-toolbar-copy">
                 <strong>Selected chips</strong>
                 <span>Pick 2 or more colors, choose the keeper chip, then merge them.</span>
+                {savedMergePlan ? (
+                  <small className="saved-note">
+                    Last saved {formatSavedAt(savedMergePlan.savedAt)}
+                    {savedMergePlan.fileName ? ` from ${savedMergePlan.fileName}` : ""}.
+                  </small>
+                ) : null}
               </div>
               <div className="merge-controls">
                 <label className="field merge-field">
@@ -400,8 +481,23 @@ export function PrototypeApp() {
                 >
                   Merge Selected
                 </button>
+                <button
+                  className="save-button"
+                  disabled={paletteColors.length === 0}
+                  onClick={saveMergedChoices}
+                  type="button"
+                >
+                  Save Merge Choices
+                </button>
+                {savedMergePlan ? (
+                  <button className="restore-button" onClick={restoreSavedChoices} type="button">
+                    Restore Saved Palette
+                  </button>
+                ) : null}
               </div>
             </div>
+
+            {saveMessage ? <p className="status">{saveMessage}</p> : null}
 
             <div className="selection-strip">
               {selectedColorIds.length > 0 ? (
@@ -680,6 +776,19 @@ function buildCanPlan(requiredGallons: number) {
 function formatCanPlan(plan: { requiredGallons: number; packages: CanBreakdown[] }) {
   const packageLabel = plan.packages.map((entry) => `${entry.count} × ${entry.label}`).join(" + ");
   return `${packageLabel} (${roundToTenths(plan.requiredGallons).toFixed(1)} gal est.)`;
+}
+
+function formatSavedAt(savedAt: string) {
+  const timestamp = Date.parse(savedAt);
+
+  if (Number.isNaN(timestamp)) {
+    return "recently";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(timestamp);
 }
 
 function roundToTenths(value: number) {
