@@ -30,6 +30,8 @@ These files are published as GitHub prereleases so testers can download them dir
 
 This is part of the prototype exit criteria. A build that only exists inside Actions is not enough.
 
+The Android and iOS preview releases are published independently so an iOS build failure does not block Android tester delivery.
+
 ### Current limitation
 
 The iOS release is currently a simulator build, not a signed physical-device build or TestFlight delivery. Physical-device iOS distribution still requires Apple signing and provisioning work in a later stage.

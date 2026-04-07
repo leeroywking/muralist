@@ -72,11 +72,13 @@ jobs:
         working-directory: apps/mobile/ios
         run: |
           pod install
+          xcodebuild -workspace Muralist.xcworkspace -scheme Muralist -showdestinations
           xcodebuild \
-            -project Muralist.xcodeproj \
+            -workspace Muralist.xcworkspace \
             -scheme Muralist \
             -configuration Release \
             -sdk iphonesimulator \
+            -destination "generic/platform=iOS Simulator" \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO
 
@@ -91,11 +93,10 @@ jobs:
           path: apps/mobile/ios/build/Build/Products/Release-iphonesimulator/muralist-ios-simulator.zip
           if-no-files-found: error
 
-  publish-preview-release:
+  publish-android-preview-release:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs:
       - android-preview
-      - ios-simulator-preview
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -107,20 +108,39 @@ jobs:
           name: android-preview-apk
           path: release-assets/android
 
+      - name: Publish Android prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-preview-${{ github.run_number }}
+          name: Android Preview ${{ github.run_number }}
+          prerelease: true
+          generate_release_notes: true
+          target_commitish: ${{ github.sha }}
+          files: |
+            release-assets/android/app-release.apk
+
+  publish-ios-simulator-preview-release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - ios-simulator-preview
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
       - name: Download iOS simulator artifact
         uses: actions/download-artifact@v4
         with:
           name: ios-simulator-preview
           path: release-assets/ios
 
-      - name: Publish GitHub prerelease
+      - name: Publish iOS simulator prerelease
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: mobile-preview-${{ github.run_number }}
-          name: Mobile Preview ${{ github.run_number }}
+          tag_name: ios-simulator-preview-${{ github.run_number }}
+          name: iOS Simulator Preview ${{ github.run_number }}
           prerelease: true
           generate_release_notes: true
           target_commitish: ${{ github.sha }}
           files: |
-            release-assets/android/app-release.apk
             release-assets/ios/muralist-ios-simulator.zip
