@@ -17,6 +17,23 @@ The CI workflow also uploads build artifacts so each run produces testable outpu
 - `web-static`
 - `mobile-export`
 
+## Mobile Preview Releases
+
+GitHub Actions also produces tester-facing mobile prereleases from `main`.
+
+Outputs:
+
+- Android release APK
+- iOS simulator release build packaged as a zip
+
+These files are published as GitHub prereleases so testers can download them directly from the repository.
+
+This is part of the prototype exit criteria. A build that only exists inside Actions is not enough.
+
+### Current limitation
+
+The iOS release is currently a simulator build, not a signed physical-device build or TestFlight delivery. Physical-device iOS distribution still requires Apple signing and provisioning work in a later stage.
+
 ## GitHub Pages
 
 The web app is configured as a static export and deploys automatically to GitHub Pages from `main`.

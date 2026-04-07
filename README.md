@@ -14,6 +14,7 @@ This repository is in the planning and foundation stage. The current stopping po
 - CI running builds and tests
 - Professional documentation
 - A live demo referenced in the repository
+- Tester-facing Android and iOS release artifacts published from git
 
 ## Product Goals
 
@@ -93,6 +94,7 @@ The first round should end with a professional prototype, not a loose experiment
 - Passing unit and integration tests
 - Running production builds
 - A live deployed demo
+- Published tester-facing mobile releases
 
 ## Current Verification
 
@@ -107,6 +109,7 @@ GitHub Actions is configured to:
 - validate pull requests and `main`
 - upload API, web, and mobile build artifacts
 - deploy the web export to GitHub Pages from `main`
+- publish tester-facing Android and iOS mobile prereleases from `main`
 
 The current dependency audit still reports unresolved high-severity issues in the Expo mobile toolchain and the current Fastify line. Those are tracked in the security review and should be resolved before any public release.
 
