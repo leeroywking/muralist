@@ -55,6 +55,16 @@ The app should not treat every shaded pixel as a separate paint color. It should
 - Export color list as PDF or CSV
 - Save project name, wall dimensions, and notes for later estimation work
 - User-scoped brand preferences and custom coefficient overrides
+- Manual chip selection and merge controls with user-selected keeper color
+- Dimension-based wall input using length and width rather than precomputed area
+- Practical paint can recommendations instead of raw fractional gallon outputs
+
+## Recent Feature Requests
+
+- Capture the dominant palette broadly, capped at the top `50` colors instead of relying on a palette-size slider
+- Let the user select multiple chips and merge them into one retained paint color
+- Base estimation on wall length and width inputs
+- Present paint quantities in standard can sizes with a minimum practical purchase size
 
 ### Explicitly out of scope for the first round
 
