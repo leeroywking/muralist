@@ -10,3 +10,5 @@ coverage
 .env.*.local
 npm-debug.log*
 *.tsbuildinfo
+apps/mobile/android
+apps/mobile/ios

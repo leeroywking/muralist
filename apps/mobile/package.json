@@ -6,7 +6,11 @@
   "scripts": {
     "dev": "expo start",
     "build": "expo export --platform ios --platform android",
-    "typecheck": "tsc --noEmit"
+    "prebuild:android": "CI=1 expo prebuild --platform android --no-install --clean",
+    "prebuild:ios": "CI=1 expo prebuild --platform ios --no-install --clean",
+    "typecheck": "tsc --noEmit",
+    "android": "expo run:android",
+    "ios": "expo run:ios"
   },
   "dependencies": {
     "expo": "^52.0.18",

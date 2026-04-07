@@ -403,6 +403,7 @@ The first prototype should allow the user to select a brand profile and apply it
 - Perform security review and track mitigations
 - Ensure production builds pass for web, mobile, and backend
 - Publish a live demo tied to the repository
+- Publish tester-facing Android and iOS release artifacts from git
 - Document release and deployment steps in the README
 
 ## Open Decisions
@@ -440,8 +441,11 @@ This round is complete when there is a working prototype with all of the followi
 - CI running builds and tests
 - Professional project documentation, including a strong README
 - A live demo deployed and referenced from the repository
+- Tester-facing Android and iOS release artifacts published from git
 
 This round is not complete at the planning stage alone. The expectation is a functioning prototype with engineering discipline visible in code quality, testing, build automation, and deployment.
+
+Pages-only deployment is not sufficient by itself. This round is not done unless the repository also publishes mobile release outputs that testers can download.
 
 ## Working Agreement
 
