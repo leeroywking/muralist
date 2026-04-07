@@ -2,12 +2,13 @@
   "name": "@muralist/mobile",
   "version": "0.1.0",
   "private": true,
-  "main": "./App.tsx",
+  "main": "./index.ts",
   "scripts": {
     "dev": "expo start",
     "build": "expo export --platform ios --platform android",
     "prebuild:android": "CI=1 expo prebuild --platform android --no-install --clean",
     "prebuild:ios": "CI=1 expo prebuild --platform ios --no-install --clean",
+    "test": "node ./scripts/validate-mobile-config.mjs",
     "typecheck": "tsc --noEmit",
     "android": "expo run:android",
     "ios": "expo run:ios"
