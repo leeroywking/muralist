@@ -31,6 +31,34 @@ body {
   min-height: 100vh;
 }
 
+.site-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  width: min(1280px, calc(100vw - 2rem));
+  margin: 0 auto;
+  padding: 1rem 0 0;
+}
+
+.brand-link,
+.site-nav a {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.brand-link {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.site-nav {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.95rem;
+}
+
 .page-shell {
   width: min(1280px, calc(100vw - 2rem));
   margin: 0 auto;
@@ -160,8 +188,7 @@ h1 {
 .field-note,
 .status,
 .preview-meta span,
-.swatch-body p,
-.notes-list {
+.swatch-body p {
   color: var(--muted);
   line-height: 1.65;
 }
@@ -294,16 +321,36 @@ h1 {
   border-top: 1px solid var(--line);
 }
 
-.secondary-panel {
-  margin-top: 1rem;
+.about-panel {
+  margin-top: 0.5rem;
 }
 
-.notes-list {
-  margin: 0;
-  padding-left: 1.2rem;
+.about-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.about-card {
+  padding: 1rem 1.1rem;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.about-card h2 {
+  margin-top: 0;
 }
 
 @media (max-width: 640px) {
+  .site-header {
+    padding-top: 0.75rem;
+  }
+
+  .site-nav {
+    gap: 0.75rem;
+  }
+
   .page-shell {
     padding-top: 0.75rem;
   }

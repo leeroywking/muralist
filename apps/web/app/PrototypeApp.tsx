@@ -147,15 +147,14 @@ export function PrototypeApp() {
     <main className="page-shell">
       <section className="hero hero-grid">
         <div>
-          <p className="eyebrow">Working Prototype</p>
+          <p className="eyebrow">Paint Estimator</p>
           <h1>Muralist</h1>
           <p className="lede">
-            Upload a mural image, collapse near-identical shades into a practical
-            paint list, and estimate gallons by brand coverage assumptions.
+            Upload mural artwork, reduce close shades into a practical paint list,
+            and estimate gallons by brand coverage.
           </p>
           <p className="hero-note">
-            This browser prototype intentionally merges close colors so digital
-            shading does not explode into an unusable paint list.
+            Close colors are merged on purpose so the final palette stays usable in the field.
           </p>
         </div>
         <div className="hero-panel">
@@ -180,7 +179,7 @@ export function PrototypeApp() {
         <section className="panel">
           <div className="section-head">
             <h2>1. Upload Artwork</h2>
-            <p>Analyze in the browser. No server round-trip required for this prototype.</p>
+            <p>Choose an image and generate a reduced paint palette.</p>
           </div>
 
           <label className="upload-zone">
@@ -292,8 +291,8 @@ export function PrototypeApp() {
               <strong>{selectedBrand.coverage} sq ft per gallon</strong>
             </div>
             <div>
-              <span className="metric-label">Guest-mode note</span>
-              <strong>Calculations are local and unsaved</strong>
+              <span className="metric-label">Default coats</span>
+              <strong>{selectedBrand.coats}</strong>
             </div>
           </div>
         </section>
@@ -358,18 +357,6 @@ export function PrototypeApp() {
             Upload an image to see the reduced palette and per-color paint estimates.
           </div>
         )}
-      </section>
-
-      <section className="panel secondary-panel">
-        <div className="section-head">
-          <h2>Prototype Notes</h2>
-          <p>Project docs belong in the repository. The live app stays focused on the workflow.</p>
-        </div>
-        <ul className="notes-list">
-          <li>Color extraction runs locally in the browser with canvas sampling and weighted color merges.</li>
-          <li>Brand coverage assumptions are rough planning defaults, not purchase-grade guarantees.</li>
-          <li>Signed OAuth and saved libraries are still pending implementation in later rounds.</li>
-        </ul>
       </section>
 
       <canvas className="hidden-canvas" ref={canvasRef} />
