@@ -1,0 +1,119 @@
+:root {
+  --bg: #f2ede3;
+  --bg-accent: #e5dccb;
+  --ink: #16221b;
+  --muted: #4d5a52;
+  --card: rgba(255, 253, 248, 0.76);
+  --line: rgba(22, 34, 27, 0.12);
+  --accent: #bb5a2a;
+  --accent-2: #3e7f61;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  font-family: Georgia, "Times New Roman", serif;
+  background:
+    radial-gradient(circle at top left, rgba(187, 90, 42, 0.18), transparent 26%),
+    radial-gradient(circle at bottom right, rgba(62, 127, 97, 0.18), transparent 24%),
+    linear-gradient(180deg, var(--bg), var(--bg-accent));
+  color: var(--ink);
+}
+
+body {
+  min-height: 100vh;
+}
+
+.page-shell {
+  width: min(1100px, calc(100vw - 2rem));
+  margin: 0 auto;
+  padding: 4rem 0 5rem;
+}
+
+.hero {
+  padding: 2.5rem;
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0.24));
+  box-shadow: 0 18px 44px rgba(41, 51, 43, 0.08);
+}
+
+.eyebrow {
+  margin: 0 0 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 0.8rem;
+  color: var(--accent-2);
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(3rem, 8vw, 6rem);
+  line-height: 0.95;
+}
+
+.lede {
+  max-width: 42rem;
+  margin: 1rem 0 0;
+  font-size: 1.15rem;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.provider-grid,
+.card-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.provider-grid {
+  margin-top: 1.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(120px, max-content));
+}
+
+.pill {
+  padding: 0.7rem 1rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 253, 248, 0.82);
+  font-size: 0.95rem;
+}
+
+.card-grid {
+  margin-top: 1.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.card {
+  padding: 1.4rem;
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  backdrop-filter: blur(12px);
+}
+
+.card h2 {
+  margin-top: 0;
+}
+
+.card p {
+  margin-bottom: 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+@media (max-width: 640px) {
+  .page-shell {
+    padding-top: 1.5rem;
+  }
+
+  .hero {
+    padding: 1.5rem;
+  }
+}
+
