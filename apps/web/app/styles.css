@@ -320,6 +320,7 @@ h1 {
 .merge-button,
 .save-button,
 .restore-button,
+.mix-button,
 .swatch-toggle,
 .selected-chip {
   font: inherit;
@@ -327,7 +328,8 @@ h1 {
 
 .merge-button,
 .save-button,
-.restore-button {
+.restore-button,
+.mix-button {
   padding: 0.9rem 1rem;
   border-radius: 14px;
   cursor: pointer;
@@ -340,7 +342,8 @@ h1 {
 }
 
 .save-button,
-.restore-button {
+.restore-button,
+.mix-button {
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.92);
   color: var(--ink);
@@ -348,7 +351,8 @@ h1 {
 
 .merge-button:disabled,
 .save-button:disabled,
-.restore-button:disabled {
+.restore-button:disabled,
+.mix-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -396,6 +400,67 @@ h1 {
 
 .results-panel {
   margin-top: 1rem;
+}
+
+.mix-plan-panel {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+}
+
+.mix-plan-grid {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.mix-plan-card {
+  padding: 1rem 1.1rem;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.mix-buy-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  margin-top: 0.85rem;
+}
+
+.mix-buy-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(248, 240, 230, 0.7);
+}
+
+.mix-target-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.mix-swatch-pair {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.mix-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid rgba(23, 35, 26, 0.12);
+}
+
+.mix-note {
+  color: var(--muted);
+  line-height: 1.55;
 }
 
 .palette-grid {

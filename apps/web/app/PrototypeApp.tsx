@@ -42,6 +42,32 @@ type CanBreakdown = {
   count: number;
 };
 
+type MixingBasePaint = {
+  id: string;
+  name: string;
+  rgb: [number, number, number];
+};
+
+type MixingRecipe = {
+  colorId: string;
+  targetHex: string;
+  mixHex: string;
+  distance: number;
+  totalParts: number;
+  components: {
+    paintId: string;
+    paintName: string;
+    parts: number;
+  }[];
+};
+
+type MixingPlan = {
+  paletteIds: string[];
+  paints: MixingBasePaint[];
+  recipes: MixingRecipe[];
+  score: number;
+};
+
 const brandProfiles: BrandProfile[] = [
   {
     id: "sherwin_williams",
@@ -76,6 +102,16 @@ const canSizes: CanBreakdown[] = [
   { gallons: 1, label: "1 gal can", count: 0 },
   { gallons: 0.25, label: "1 qt can", count: 0 }
 ];
+const mixingBasePaints: MixingBasePaint[] = [
+  { id: "white", name: "Titanium White", rgb: [244, 242, 236] },
+  { id: "black", name: "Carbon Black", rgb: [34, 37, 43] },
+  { id: "blue", name: "Ultramarine Blue", rgb: [41, 73, 170] },
+  { id: "cyan", name: "Phthalo Blue", rgb: [0, 118, 191] },
+  { id: "yellow", name: "Primary Yellow", rgb: [227, 186, 40] },
+  { id: "red", name: "Primary Red", rgb: [187, 64, 60] },
+  { id: "green", name: "Phthalo Green", rgb: [38, 130, 100] }
+];
+const maxMixPlanColors = 3;
 
 export function PrototypeApp() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -92,6 +128,7 @@ export function PrototypeApp() {
   const [mergeKeeperId, setMergeKeeperId] = useState<string>("");
   const [savedMergePlan, setSavedMergePlan] = useState<SavedMergePlan | null>(null);
   const [saveMessage, setSaveMessage] = useState("");
+  const [mixingPlan, setMixingPlan] = useState<MixingPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -115,6 +152,9 @@ export function PrototypeApp() {
 
   const mergeOptions = useMemo(() => {
     return paletteColors.filter((color) => selectedColorIds.includes(color.id));
+  }, [paletteColors, selectedColorIds]);
+  const mixTargetColors = useMemo(() => {
+    return paletteColors.filter((color) => selectedColorIds.includes(color.id)).slice(0, maxMixPlanColors);
   }, [paletteColors, selectedColorIds]);
 
   useEffect(() => {
@@ -157,6 +197,7 @@ export function PrototypeApp() {
     setFileName(file.name);
     setError(null);
     setSaveMessage("");
+    setMixingPlan(null);
     setSelectedColorIds([]);
     setMergeKeeperId("");
 
@@ -233,6 +274,7 @@ export function PrototypeApp() {
     setSelectedColorIds([]);
     setMergeKeeperId("");
     setSaveMessage("");
+    setMixingPlan(null);
   }
 
   function saveMergedChoices() {
@@ -273,6 +315,15 @@ export function PrototypeApp() {
     setSelectedColorIds([]);
     setMergeKeeperId("");
     setSaveMessage("Saved merged choices restored.");
+    setMixingPlan(null);
+  }
+
+  function generateMixingPlan() {
+    if (mixTargetColors.length === 0) {
+      return;
+    }
+
+    setMixingPlan(buildMixingPlan(mixTargetColors));
   }
 
   return (
@@ -441,6 +492,10 @@ export function PrototypeApp() {
                 <strong>{selectedColorIds.length}</strong>
               </div>
               <div>
+                <span className="metric-label">Mix planner</span>
+                <strong>{Math.min(selectedColorIds.length, maxMixPlanColors)} target colors</strong>
+              </div>
+              <div>
                 <span className="metric-label">Estimated total</span>
                 <strong>{estimateReady ? formatCanPlan(getTotalCanPlan(paletteColors, wallArea, parsedCoats, parsedWaste, selectedBrand.coverage)) : "--"}</strong>
               </div>
@@ -494,6 +549,14 @@ export function PrototypeApp() {
                     Restore Saved Palette
                   </button>
                 ) : null}
+                <button
+                  className="mix-button"
+                  disabled={mixTargetColors.length === 0}
+                  onClick={generateMixingPlan}
+                  type="button"
+                >
+                  Find Mix Plan
+                </button>
               </div>
             </div>
 
@@ -519,6 +582,58 @@ export function PrototypeApp() {
                 <div className="empty-selection">Select chips below to start a manual merge.</div>
               )}
             </div>
+
+            <section className="mix-plan-panel">
+              <div className="section-head">
+                <h3>4. Mix Planner</h3>
+                <p>
+                  Select up to {maxMixPlanColors} chips, then generate a shared mixing plan that tries to reduce the
+                  number of paints you need to buy.
+                </p>
+              </div>
+
+              {mixingPlan ? (
+                <div className="mix-plan-grid">
+                  <article className="mix-plan-card">
+                    <strong>Buy These Base Paints</strong>
+                    <div className="mix-buy-list">
+                      {mixingPlan.paints.map((paint) => (
+                        <div className="mix-buy-chip" key={paint.id}>
+                          <span className="selected-chip-swatch" style={{ backgroundColor: rgbToHex(paint.rgb) }} />
+                          <span>{paint.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="mix-note">
+                      This is a rough studio plan. Start with test batches before scaling up to full cans.
+                    </p>
+                  </article>
+
+                  {mixingPlan.recipes.map((recipe) => (
+                    <article className="mix-plan-card" key={recipe.colorId}>
+                      <div className="mix-target-row">
+                        <div>
+                          <span className="metric-label">Target color</span>
+                          <strong>{recipe.targetHex}</strong>
+                        </div>
+                        <span className="mix-swatch-pair">
+                          <span className="mix-swatch" style={{ backgroundColor: recipe.targetHex }} />
+                          <span className="mix-swatch" style={{ backgroundColor: recipe.mixHex }} />
+                        </span>
+                      </div>
+                      <p>{formatRecipe(recipe)}</p>
+                      <small className="mix-note">
+                        Approximate match score: {recipe.distance.toFixed(1)}. Lower is closer.
+                      </small>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div className="empty-selection">
+                  Select one to three colors, then use <strong>Find Mix Plan</strong> to generate rough artist-friendly ratios.
+                </div>
+              )}
+            </section>
 
             <div className="palette-grid">
               {paletteColors.map((color) => {
@@ -773,9 +888,178 @@ function buildCanPlan(requiredGallons: number) {
   };
 }
 
+function buildMixingPlan(targetColors: PaletteColor[]) {
+  const targetPalette = targetColors.slice(0, maxMixPlanColors);
+  const candidateSets = getMixingCandidateSets();
+  let bestPlan: MixingPlan | null = null;
+
+  for (const paints of candidateSets) {
+    const recipes = targetPalette.map((color) => getBestRecipe(color, paints));
+    const totalDistance = recipes.reduce((sum, recipe) => sum + recipe.distance, 0);
+    const sharedPaintPenalty = paints.length * 8;
+    const componentPenalty = recipes.reduce((sum, recipe) => sum + recipe.components.length, 0) * 0.75;
+    const score = totalDistance + sharedPaintPenalty + componentPenalty;
+
+    if (!bestPlan || score < bestPlan.score) {
+      bestPlan = {
+        paletteIds: targetPalette.map((color) => color.id),
+        paints,
+        recipes,
+        score
+      };
+    }
+  }
+
+  return bestPlan;
+}
+
+function getMixingCandidateSets() {
+  const paintById = new Map(mixingBasePaints.map((paint) => [paint.id, paint]));
+  const candidateIds = [
+    ["white", "blue"],
+    ["white", "cyan"],
+    ["white", "blue", "cyan"],
+    ["white", "blue", "black"],
+    ["white", "cyan", "black"],
+    ["white", "green", "blue"],
+    ["white", "yellow", "red"],
+    ["white", "yellow", "green"],
+    ["white", "red", "blue"],
+    ["white", "yellow", "black"],
+    ["white", "red", "black"],
+    ["white", "green", "black"]
+  ];
+
+  return candidateIds.map((ids) => ids.map((id) => paintById.get(id)!));
+}
+
+function getBestRecipe(targetColor: PaletteColor, paints: MixingBasePaint[]): MixingRecipe {
+  let bestRecipe: MixingRecipe | null = null;
+
+  for (let totalParts = 2; totalParts <= 6; totalParts += 1) {
+    for (const parts of getPartsCombos(paints.length, totalParts)) {
+      const mixedRgb = mixPaints(paints, parts);
+      const distance = getColorDistance(targetColor.rgb, mixedRgb);
+      const candidate: MixingRecipe = {
+        colorId: targetColor.id,
+        targetHex: targetColor.hex,
+        mixHex: rgbToHex(mixedRgb),
+        distance,
+        totalParts,
+        components: paints
+          .map((paint, index) => ({
+            paintId: paint.id,
+            paintName: paint.name,
+            parts: parts[index] ?? 0
+          }))
+          .filter((component) => component.parts > 0)
+      };
+
+      if (!bestRecipe || candidate.distance < bestRecipe.distance) {
+        bestRecipe = candidate;
+      }
+    }
+  }
+
+  return bestRecipe!;
+}
+
+function getPartsCombos(length: number, totalParts: number): number[][] {
+  const combos: number[][] = [];
+
+  function build(index: number, remaining: number, current: number[]) {
+    if (index === length - 1) {
+      combos.push([...current, remaining]);
+      return;
+    }
+
+    for (let value = 1; value <= remaining - (length - index - 1); value += 1) {
+      build(index + 1, remaining - value, [...current, value]);
+    }
+  }
+
+  build(0, totalParts, []);
+  return combos;
+}
+
+function mixPaints(paints: MixingBasePaint[], parts: number[]) {
+  const linear = paints.map((paint) => paint.rgb.map(srgbToLinear) as [number, number, number]);
+  const totalParts = parts.reduce((sum, part) => sum + part, 0);
+
+  const mixed = linear.reduce<[number, number, number]>((sum, color, index) => {
+    const weight = (parts[index] ?? 0) / totalParts;
+
+    return [
+      sum[0] + color[0] * weight,
+      sum[1] + color[1] * weight,
+      sum[2] + color[2] * weight
+    ];
+  }, [0, 0, 0]);
+
+  return [
+    linearToSrgb(mixed[0]),
+    linearToSrgb(mixed[1]),
+    linearToSrgb(mixed[2])
+  ] as [number, number, number];
+}
+
+function getColorDistance(left: [number, number, number], right: [number, number, number]) {
+  const leftLab = rgbToLab(left);
+  const rightLab = rgbToLab(right);
+
+  return Math.sqrt(
+    (leftLab[0] - rightLab[0]) ** 2 +
+      (leftLab[1] - rightLab[1]) ** 2 +
+      (leftLab[2] - rightLab[2]) ** 2
+  );
+}
+
+function rgbToLab(rgb: [number, number, number]) {
+  const red = srgbToLinear(rgb[0]);
+  const green = srgbToLinear(rgb[1]);
+  const blue = srgbToLinear(rgb[2]);
+  const x = red * 0.4124564 + green * 0.3575761 + blue * 0.1804375;
+  const y = red * 0.2126729 + green * 0.7151522 + blue * 0.072175;
+  const z = red * 0.0193339 + green * 0.119192 + blue * 0.9503041;
+
+  const normalizedX = x / 0.95047;
+  const normalizedY = y / 1;
+  const normalizedZ = z / 1.08883;
+
+  const fx = labPivot(normalizedX);
+  const fy = labPivot(normalizedY);
+  const fz = labPivot(normalizedZ);
+
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)] as [number, number, number];
+}
+
+function labPivot(value: number) {
+  return value > 0.008856 ? Math.cbrt(value) : 7.787 * value + 16 / 116;
+}
+
+function srgbToLinear(channel: number) {
+  const normalized = channel / 255;
+  return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+function linearToSrgb(value: number) {
+  const normalized =
+    value <= 0.0031308 ? value * 12.92 : 1.055 * value ** (1 / 2.4) - 0.055;
+
+  return Math.max(0, Math.min(255, Math.round(normalized * 255)));
+}
+
 function formatCanPlan(plan: { requiredGallons: number; packages: CanBreakdown[] }) {
   const packageLabel = plan.packages.map((entry) => `${entry.count} × ${entry.label}`).join(" + ");
   return `${packageLabel} (${roundToTenths(plan.requiredGallons).toFixed(1)} gal est.)`;
+}
+
+function formatRecipe(recipe: MixingRecipe) {
+  const ratio = recipe.components
+    .map((component) => `${component.parts} part${component.parts === 1 ? "" : "s"} ${component.paintName}`)
+    .join(", ");
+
+  return `Mix ${ratio} for an approximation near ${recipe.targetHex}.`;
 }
 
 function formatSavedAt(savedAt: string) {
