@@ -100,7 +100,7 @@ jobs:
             git worktree add -b gh-pages /tmp/gh-pages
           fi
           mkdir -p /tmp/gh-pages/previews
-          rsync -a --delete --exclude previews apps/web/out/ /tmp/gh-pages/
+          rsync -a --delete --exclude .git --exclude previews apps/web/out/ /tmp/gh-pages/
           touch /tmp/gh-pages/.nojekyll
           cd /tmp/gh-pages
           git add .

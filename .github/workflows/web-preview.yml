@@ -46,7 +46,7 @@ jobs:
             git worktree add -b gh-pages /tmp/gh-pages
           fi
           mkdir -p /tmp/gh-pages/previews/color-mix-planner
-          rsync -a --delete apps/web/out/ /tmp/gh-pages/previews/color-mix-planner/
+          rsync -a --delete --exclude .git apps/web/out/ /tmp/gh-pages/previews/color-mix-planner/
           touch /tmp/gh-pages/.nojekyll
           cd /tmp/gh-pages
           git add .
