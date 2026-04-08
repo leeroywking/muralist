@@ -9,19 +9,13 @@ jobs:
   deploy-preview:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    concurrency:
-      group: github-pages
-      cancel-in-progress: true
+      contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -35,20 +29,30 @@ jobs:
       - name: Build web export for preview
         env:
           GITHUB_PAGES: "true"
-          GITHUB_PAGES_BASE_PATH: "/muralist"
+          GITHUB_PAGES_BASE_PATH: "/muralist/previews/color-mix-planner"
         run: npm run build --workspace @muralist/web
 
       - name: Add .nojekyll marker
         run: touch apps/web/out/.nojekyll
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: apps/web/out
-
-      - name: Deploy preview to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Publish preview to gh-pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code origin gh-pages; then
+            git fetch origin gh-pages
+            git worktree add /tmp/gh-pages origin/gh-pages
+          else
+            git worktree add -b gh-pages /tmp/gh-pages
+          fi
+          mkdir -p /tmp/gh-pages/previews/color-mix-planner
+          rsync -a --delete apps/web/out/ /tmp/gh-pages/previews/color-mix-planner/
+          touch /tmp/gh-pages/.nojekyll
+          cd /tmp/gh-pages
+          git add .
+          if git diff --cached --quiet; then
+            echo "No preview changes to publish."
+            exit 0
+          fi
+          git commit -m "Deploy preview feat/color-mix-planner from ${GITHUB_SHA}"
+          git push origin HEAD:gh-pages

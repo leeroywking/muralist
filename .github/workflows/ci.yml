@@ -58,24 +58,18 @@ jobs:
           path: apps/mobile/dist
           if-no-files-found: error
 
-  deploy-pages:
+  publish-pages:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: validate
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    concurrency:
-      group: github-pages
-      cancel-in-progress: true
+      contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -95,14 +89,24 @@ jobs:
       - name: Add .nojekyll marker
         run: touch apps/web/out/.nojekyll
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: apps/web/out
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Publish root site to gh-pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code origin gh-pages; then
+            git fetch origin gh-pages
+            git worktree add /tmp/gh-pages origin/gh-pages
+          else
+            git worktree add -b gh-pages /tmp/gh-pages
+          fi
+          mkdir -p /tmp/gh-pages/previews
+          rsync -a --delete --exclude previews apps/web/out/ /tmp/gh-pages/
+          touch /tmp/gh-pages/.nojekyll
+          cd /tmp/gh-pages
+          git add .
+          if git diff --cached --quiet; then
+            echo "No Pages changes to publish."
+            exit 0
+          fi
+          git commit -m "Deploy main site from ${GITHUB_SHA}"
+          git push origin HEAD:gh-pages
