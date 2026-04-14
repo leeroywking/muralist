@@ -94,7 +94,7 @@ test("E: every merged color gets at least one container, totals respect N-contai
     const unitCount = entry.packages.reduce((sum, pkg) => sum + pkg.count, 0);
     assert.ok(unitCount >= 1, `${entry.colorId} must have at least one container`);
   }
-  const totalUnits = plan.totals.gallons + plan.totals.quarts;
+  const totalUnits = plan.totals.gallons + plan.totals.quarts + plan.totals.samples;
   assert.ok(totalUnits >= colors.length, `expected >= ${colors.length} total containers, got ${totalUnits}`);
 });
 
@@ -141,7 +141,7 @@ test("G (round-up): when quart cost is high enough that k quarts cost >= a gallo
   assert.equal(quartEntry, undefined);
 });
 
-test("G: colors never share containers — 6 tiny colors stay as 6 separate quarts", () => {
+test("D + G: colors never share containers — 6 detail colors become 6 separate samples", () => {
   const catalog = buildCheapQuartsCatalog();
   const plan = suggestContainersForColors(
     {
@@ -157,10 +157,116 @@ test("G: colors never share containers — 6 tiny colors stay as 6 separate quar
     catalog
   );
 
-  // Each color needs a tiny fraction of a gallon but E enforces 1 quart minimum each.
-  assert.equal(plan.totals.quarts, 6);
+  // Each color needs a tiny fraction of a gallon; samples are cheaper than
+  // quarts in this fixture, so D prefers samples for detail colors.
+  assert.equal(plan.totals.samples, 6);
+  assert.equal(plan.totals.quarts, 0);
   assert.equal(plan.totals.gallons, 0);
 });
+
+test("D: a detail color whose total fits in a sample uses 1 sample", () => {
+  const catalog = buildCheapQuartsCatalog();
+  const plan = suggestContainersForColors(
+    {
+      brandId: "fixture_cheap_qt",
+      areaSqFt: 80,
+      coats: 1,
+      wasteFactor: 0,
+      colors: [{ id: "detail", coveragePercent: 10 }]
+    },
+    catalog
+  );
+  // requiredGallons = (80 * 0.10 * 1) / 400 = 0.02 → < 1/16 gallon, fits in 1 sample.
+  const entry = plan.perColor[0]!;
+  assert.equal(entry.packages.length, 1);
+  assert.equal(entry.packages[0]!.unit, "sample");
+  assert.equal(entry.packages[0]!.count, 1);
+});
+
+test("per-color coats override: one color with more coats needs more paint than its siblings", () => {
+  const catalog = buildExpensiveQuartsCatalog();
+  const plan = suggestContainersForColors(
+    {
+      brandId: "fixture_expensive_qt",
+      areaSqFt: 1000,
+      coats: 2,
+      wasteFactor: 0,
+      colors: [
+        { id: "default_coats", coveragePercent: 25 },
+        { id: "extra_coats", coveragePercent: 25, coats: 4 }
+      ]
+    },
+    catalog
+  );
+
+  const defaultEntry = plan.perColor.find((entry) => entry.colorId === "default_coats")!;
+  const extraEntry = plan.perColor.find((entry) => entry.colorId === "extra_coats")!;
+  assert.equal(defaultEntry.coats, 2);
+  assert.equal(extraEntry.coats, 4);
+  assert.ok(
+    extraEntry.requiredGallons > defaultEntry.requiredGallons * 1.9,
+    `expected extra-coats color to roughly double the gallons of the default-coats color`
+  );
+});
+
+test("per-color coats: zero or negative coats throws", () => {
+  const catalog = buildExpensiveQuartsCatalog();
+  assert.throws(
+    () =>
+      suggestContainersForColors(
+        {
+          brandId: "fixture_expensive_qt",
+          areaSqFt: 1000,
+          coats: 2,
+          wasteFactor: 0,
+          colors: [{ id: "bad", coveragePercent: 25, coats: 0 }]
+        },
+        catalog
+      ),
+    /coats must be greater than zero/
+  );
+});
+
+test("D: sample regime skipped when sample price is not cheaper than a quart", () => {
+  const catalog = buildSampleNotCheaperCatalog();
+  const plan = suggestContainersForColors(
+    {
+      brandId: "fixture_sample_pricey",
+      areaSqFt: 80,
+      coats: 1,
+      wasteFactor: 0,
+      colors: [{ id: "detail", coveragePercent: 10 }]
+    },
+    catalog
+  );
+  // Same tiny required gallons as the test above, but sample price >= quart
+  // price here, so D defers to the quart-minimum baseline (E).
+  const entry = plan.perColor[0]!;
+  assert.equal(entry.packages.length, 1);
+  assert.equal(entry.packages[0]!.unit, "quart");
+  assert.equal(entry.packages[0]!.count, 1);
+});
+
+function buildSampleNotCheaperCatalog(): PaintBrandCatalog {
+  return {
+    version: 1,
+    units: { coverage: "sqft_per_gallon", price: "usd_per_unit" },
+    brands: [
+      {
+        id: "fixture_sample_pricey",
+        display_name: "Fixture Sample Not Cheaper",
+        retailer: "Test",
+        coverage: { min: 400, default: 400, max: 400 },
+        default_coats: 2,
+        confidence: "fixture",
+        notes: "Fixture where sample price is not cheaper than a quart.",
+        sources: [],
+        prices: { currency: "USD", sample: 10, quart: 8, gallon: 30 },
+        finishes: [{ id: "flat", display_name: "Flat", coverage_multiplier: 1.0 }]
+      }
+    ]
+  };
+}
 
 function buildCheapQuartsCatalog(): PaintBrandCatalog {
   return {
@@ -176,7 +282,7 @@ function buildCheapQuartsCatalog(): PaintBrandCatalog {
         confidence: "fixture",
         notes: "Fixture where 4 quarts cost less than one gallon.",
         sources: [],
-        prices: { currency: "USD", quart: 5, gallon: 50 },
+        prices: { currency: "USD", sample: 3, quart: 5, gallon: 50 },
         finishes: [{ id: "flat", display_name: "Flat", coverage_multiplier: 1.0 }]
       }
     ]
@@ -197,7 +303,7 @@ function buildExpensiveQuartsCatalog(): PaintBrandCatalog {
         confidence: "fixture",
         notes: "Fixture where quarts are disproportionately expensive vs gallons.",
         sources: [],
-        prices: { currency: "USD", quart: 14, gallon: 30 },
+        prices: { currency: "USD", sample: 6, quart: 14, gallon: 30 },
         finishes: [{ id: "flat", display_name: "Flat", coverage_multiplier: 1.0 }]
       }
     ]

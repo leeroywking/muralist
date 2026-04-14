@@ -33,16 +33,23 @@ export type ColorCoverage = {
   id: string;
   coveragePercent: number;
   finishId?: string;
+  coats?: number;
 };
 
 export type ContainerPlanEntry = {
-  unit: "gallon" | "quart";
+  unit: "gallon" | "quart" | "sample";
   count: number;
 };
+
+// 8 fl oz / 128 fl oz per US gallon. Muralists use samples for detail colors
+// where a quart would over-buy. Coverage is implicit via brand.coverage.default
+// scaled by this volume fraction, so no separate sample_coverage_sqft is needed.
+const SAMPLE_GALLONS = 1 / 16;
 
 export type ColorContainerPlan = {
   colorId: string;
   finishId: string;
+  coats: number;
   requiredGallons: number;
   packages: ContainerPlanEntry[];
 };
@@ -52,6 +59,7 @@ export type ContainerPlan = {
   totals: {
     gallons: number;
     quarts: number;
+    samples: number;
   };
 };
 
@@ -148,14 +156,20 @@ export function suggestContainersForColors(
       throw new Error(`Unknown finishId for brand ${brand.id}: ${finishId}`);
     }
 
+    const colorCoats = color.coats ?? coats;
+    if (!(colorCoats > 0)) {
+      throw new Error(`Color ${color.id} coats must be greater than zero.`);
+    }
+
     const effectiveCoverage = brand.coverage.default * finish.coverage_multiplier;
     const colorArea = input.areaSqFt * (color.coveragePercent / 100);
-    const requiredGallons = (colorArea * coats * (1 + wasteFactor)) / effectiveCoverage;
+    const requiredGallons = (colorArea * colorCoats * (1 + wasteFactor)) / effectiveCoverage;
     const packages = packContainersForColor(requiredGallons, brand.prices);
 
     return {
       colorId: color.id,
       finishId,
+      coats: colorCoats,
       requiredGallons,
       packages
     };
@@ -166,13 +180,15 @@ export function suggestContainersForColors(
       for (const entry of plan.packages) {
         if (entry.unit === "gallon") {
           acc.gallons += entry.count;
-        } else {
+        } else if (entry.unit === "quart") {
           acc.quarts += entry.count;
+        } else {
+          acc.samples += entry.count;
         }
       }
       return acc;
     },
-    { gallons: 0, quarts: 0 }
+    { gallons: 0, quarts: 0, samples: 0 }
   );
 
   return { perColor, totals };
@@ -182,7 +198,30 @@ function packContainersForColor(
   requiredGallons: number,
   prices: PaintBrandPrices
 ): ContainerPlanEntry[] {
-  // E: every color gets at least one container — minimum one quart.
+  // D (sample-first regime): detail colors whose total need fits in samples,
+  // and where samples cost less than a quart for that need, pack as samples.
+  // This captures "muralists use 8oz samples for detail colors."
+  if (requiredGallons <= 0) {
+    // E: at least one container even when coverage is trivially zero.
+    return prices.sample < prices.quart
+      ? [{ unit: "sample", count: 1 }]
+      : [{ unit: "quart", count: 1 }];
+  }
+  const samplesForWhole = Math.max(1, Math.ceil(requiredGallons / SAMPLE_GALLONS));
+  if (
+    requiredGallons <= SAMPLE_GALLONS &&
+    prices.sample < prices.quart
+  ) {
+    return [{ unit: "sample", count: 1 }];
+  }
+  if (
+    samplesForWhole * SAMPLE_GALLONS <= 0.25 &&
+    samplesForWhole * prices.sample < prices.quart
+  ) {
+    return [{ unit: "sample", count: samplesForWhole }];
+  }
+
+  // E: fall-through baseline = at least one quart.
   const effectiveGallons = Math.max(0.25, requiredGallons);
   const wholeGallons = Math.floor(effectiveGallons);
   const remainder = effectiveGallons - wholeGallons;

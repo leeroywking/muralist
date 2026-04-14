@@ -35,6 +35,7 @@ type SavedMergePlan = {
   paletteColors: PaletteColor[];
   defaultFinishId?: string;
   colorFinishOverrides?: Record<string, string>;
+  colorCoatsOverrides?: Record<string, number>;
 };
 
 const maxDimension = 320;
@@ -65,6 +66,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   const [wastePercent, setWastePercent] = useState("10");
   const [defaultFinishId, setDefaultFinishId] = useState<string>(defaultBrand.finishes[0]!.id);
   const [colorFinishOverrides, setColorFinishOverrides] = useState<Record<string, string>>({});
+  const [colorCoatsOverrides, setColorCoatsOverrides] = useState<Record<string, number>>({});
   const [selectedColorIds, setSelectedColorIds] = useState<string[]>([]);
   const [mergeKeeperId, setMergeKeeperId] = useState<string>("");
   const [savedMergePlan, setSavedMergePlan] = useState<SavedMergePlan | null>(null);
@@ -105,7 +107,8 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
         colors: paletteColors.map((color) => ({
           id: color.id,
           coveragePercent: color.coveragePercent,
-          finishId: colorFinishOverrides[color.id]
+          finishId: colorFinishOverrides[color.id],
+          coats: colorCoatsOverrides[color.id]
         }))
       },
       catalog
@@ -118,6 +121,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     parsedWaste,
     defaultFinishId,
     colorFinishOverrides,
+    colorCoatsOverrides,
     paletteColors,
     estimateReady
   ]);
@@ -180,6 +184,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setSelectedColorIds([]);
     setMergeKeeperId("");
     setColorFinishOverrides({});
+    setColorCoatsOverrides({});
 
     startTransition(async () => {
       try {
@@ -204,6 +209,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       // overrides so we never keep a finishId that isn't valid for the new brand.
       setDefaultFinishId(nextBrand.finishes[0]!.id);
       setColorFinishOverrides({});
+      setColorCoatsOverrides({});
     }
   }
 
@@ -219,6 +225,23 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       }
       return { ...current, [colorId]: nextFinishId };
     });
+  }
+
+  function handleColorCoatsChange(colorId: string, nextCoatsRaw: string) {
+    const nextCoats = Number(nextCoatsRaw);
+    setColorCoatsOverrides((current) => {
+      if (!Number.isFinite(nextCoats) || nextCoats <= 0 || nextCoats === parsedCoats) {
+        const { [colorId]: _removed, ...rest } = current;
+        return rest;
+      }
+      return { ...current, [colorId]: nextCoats };
+    });
+  }
+
+  function handlePrint() {
+    if (typeof window !== "undefined") {
+      window.print();
+    }
   }
 
   function toggleColorSelection(colorId: string) {
@@ -269,12 +292,21 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       .sort((left, right) => right.pixelCount - left.pixelCount);
 
     setPaletteColors(rebalanceCoverage(nextPalette));
+    const retainedIds = new Set(nextPalette.map((color) => color.id));
     setColorFinishOverrides((current) => {
-      const retainedIds = new Set(nextPalette.map((color) => color.id));
       const next: Record<string, string> = {};
       for (const [colorId, finishId] of Object.entries(current)) {
         if (retainedIds.has(colorId)) {
           next[colorId] = finishId;
+        }
+      }
+      return next;
+    });
+    setColorCoatsOverrides((current) => {
+      const next: Record<string, number> = {};
+      for (const [colorId, coatsValue] of Object.entries(current)) {
+        if (retainedIds.has(colorId)) {
+          next[colorId] = coatsValue;
         }
       }
       return next;
@@ -300,7 +332,8 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       sourceAnalysis,
       paletteColors,
       defaultFinishId,
-      colorFinishOverrides
+      colorFinishOverrides,
+      colorCoatsOverrides
     };
 
     window.localStorage.setItem(savedMergePlanKey, JSON.stringify(nextSavedPlan));
@@ -325,6 +358,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       savedMergePlan.defaultFinishId ?? defaultFinishForBrand(savedMergePlan.selectedBrandId);
     setDefaultFinishId(restoredDefaultFinish);
     setColorFinishOverrides(savedMergePlan.colorFinishOverrides ?? {});
+    setColorCoatsOverrides(savedMergePlan.colorCoatsOverrides ?? {});
     setSelectedColorIds([]);
     setMergeKeeperId("");
     setSaveMessage("Saved merged choices restored.");
@@ -558,6 +592,14 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 >
                   Save Merge Choices
                 </button>
+                <button
+                  className="print-button"
+                  disabled={paletteColors.length === 0}
+                  onClick={handlePrint}
+                  type="button"
+                >
+                  Print / Save PDF
+                </button>
                 {savedMergePlan ? (
                   <button className="restore-button" onClick={restoreSavedChoices} type="button">
                     Restore Saved Palette
@@ -622,6 +664,15 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                             </option>
                           ))}
                         </select>
+                      </label>
+                      <label className="field field-inline swatch-coats">
+                        <span>Coats</span>
+                        <input
+                          type="number"
+                          min="1"
+                          value={colorCoatsOverrides[color.id] ?? (Number.isFinite(parsedCoats) ? parsedCoats : 2)}
+                          onChange={(event) => handleColorCoatsChange(color.id, event.target.value)}
+                        />
                       </label>
                       <div className="estimate-row">
                         <span>{selectedBrand.display_name}</span>
@@ -803,8 +854,13 @@ function rgbToHex([red, green, blue]: [number, number, number]) {
 }
 
 function formatContainerEntry(entry: ContainerPlanEntry) {
-  const unit = entry.unit === "gallon" ? "gal" : "qt";
-  return `${entry.count} × 1 ${unit} can`;
+  if (entry.unit === "gallon") {
+    return `${entry.count} × 1 gal can`;
+  }
+  if (entry.unit === "quart") {
+    return `${entry.count} × 1 qt can`;
+  }
+  return `${entry.count} × 8 oz sample`;
 }
 
 function formatContainerPackages(plan: ColorContainerPlan) {
@@ -819,6 +875,9 @@ function formatContainerTotals(totals: ContainerPlan["totals"]) {
   }
   if (totals.quarts > 0) {
     parts.push(`${totals.quarts} × 1 qt can`);
+  }
+  if (totals.samples > 0) {
+    parts.push(`${totals.samples} × 8 oz sample`);
   }
   return parts.length > 0 ? parts.join(" + ") : "--";
 }

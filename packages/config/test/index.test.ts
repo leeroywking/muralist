@@ -19,6 +19,7 @@ test("every brand exposes prices and at least one finish", async () => {
   const catalog = await loadPaintBrandCatalog();
 
   for (const brand of catalog.brands) {
+    assert.ok(brand.prices.sample > 0, `${brand.id} sample price must be positive`);
     assert.ok(brand.prices.quart > 0, `${brand.id} quart price must be positive`);
     assert.ok(brand.prices.gallon > 0, `${brand.id} gallon price must be positive`);
     assert.ok(brand.finishes.length >= 1, `${brand.id} must expose at least one finish`);
@@ -35,6 +36,12 @@ test("validator rejects a brand with non-positive quart price", () => {
   const catalog = buildFixtureCatalog();
   catalog.brands[0]!.prices.quart = 0;
   assert.throws(() => validateCatalog(catalog), /prices\.quart/);
+});
+
+test("validator rejects a brand with non-positive sample price", () => {
+  const catalog = buildFixtureCatalog();
+  catalog.brands[0]!.prices.sample = 0;
+  assert.throws(() => validateCatalog(catalog), /prices\.sample/);
 });
 
 test("validator rejects a brand with empty finishes", () => {
@@ -72,7 +79,7 @@ function buildFixtureCatalog(): PaintBrandCatalog {
         confidence: "rough_official_range",
         notes: "Test fixture only.",
         sources: [],
-        prices: { currency: "USD", quart: 15, gallon: 35 },
+        prices: { currency: "USD", sample: 6, quart: 15, gallon: 35 },
         finishes: [
           { id: "flat", display_name: "Flat", coverage_multiplier: 1.0 },
           { id: "satin", display_name: "Satin", coverage_multiplier: 0.95 }

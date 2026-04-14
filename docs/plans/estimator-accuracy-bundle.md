@@ -132,3 +132,45 @@ If any manual check cannot actually be performed (e.g. sandbox can't run the web
 3. **Build-time catalog hydration** in `apps/web` — preferred. Add a TODO alongside the hydration code noting a desired automatic periodic refresh (quarterly cadence suggested by product owner, appropriate for coverage/price/finish drift — not a new-color cadence, which is a different concern). No CI or scripts work in this bundle for the refresh itself.
 4. **Do not split.** C + E + G stays as one PR. Total file touch: `packages/config/src/index.ts`, `config/paint-brands.yaml`, `packages/config/test/index.test.ts`, `packages/core/src/index.ts`, `packages/core/test/index.test.ts`, `apps/web/app/PrototypeApp.tsx`, `apps/web/app/styles.css` — 7 files, all additive, no cross-boundary refactor. Reviewing one Pages preview with all three behaviors together is more useful than three sequential previews.
 5. **Mobile estimator triage brief** will be produced as a queued follow-up (separate output, not part of this plan's implementation).
+
+## 7. Scope addendum: D folded in (8 oz sample size)
+
+**2026-04-14:** After the C + E + G PR went up for review, user pointed out that sample-size support (originally slated as separate bundle D) was missing from the estimator. Given the scope was small and the UX feedback was clear, D was folded into the same PR rather than shipped as a follow-up. No plan re-approval needed — the original plan listed D as the next queued bundle, and the user directed that it be added.
+
+**Behavior shipped:**
+- `PaintBrandPrices.sample` added (required, validated > 0). All three seeded brands now include a snapshot sample price with `as_of: "2026-04"`.
+- `ContainerPlanEntry.unit` accepts `"sample"` in addition to `"gallon"` / `"quart"`.
+- `ContainerPlan.totals` gains a `samples` field alongside `gallons` / `quarts`.
+- `suggestContainersForColors` picks samples for **detail colors** — specifically, colors whose required paint volume fits in a single 8 oz sample **and** whose sample price is cheaper than a quart. Mid / large colors continue to use the existing quart / gallon E + G math unchanged.
+- Sample coverage is implicit (brand `coverage.default` × 1/16 by volume fraction) — no separate `sample_coverage_sqft` field needed, per yaml comment.
+- Web formatter renders `"N × 8 oz sample"` in both per-chip and total displays.
+- New core tests cover: detail color → 1 sample; sample regime skipped when sample ≥ quart price; 6 detail colors → 6 samples (no container sharing).
+
+**Kept out of this scope extension:** per-finish sample pricing (finish still affects coverage only), and automated refresh of sample prices (quarterly refresh TODO already covers all price fields).
+
+## 8. Scope addendum: per-color coats override + printer-friendly view
+
+**2026-04-14 (same session, follow-up user feedback):** After reviewing the live preview for bundle C + E + G + D, user reported three remaining gaps. One was D (already folded in above). The other two are folded in here:
+
+### Per-color coats override
+
+- **Why:** User flagged that the global Coats field didn't let them vary coats per color — e.g. a dark accent over a light wall needs more coats than the neighbouring field color.
+- **What shipped:**
+  - `ColorCoverage` gains optional `coats?: number`.
+  - `ColorContainerPlan` now reports the effective `coats` used, making the per-color decision visible.
+  - `suggestContainersForColors` applies per-color coats in the gallon math; throws on zero or negative coats.
+  - Web palette chip gains a small numeric `Coats` input next to the per-chip Finish selector; defaults to the global Coats value, override clears when set back to default.
+  - `SavedMergePlan` extended with `colorCoatsOverrides?: Record<string, number>` (back-compat read). Saved / restored alongside finish overrides.
+  - Overrides cleared on brand change, new image upload, and pruned on merge.
+- **Tests:** `packages/core` gains "per-color coats override changes required gallons" and "zero or negative coats throws".
+
+### Printer-friendly view (bundle B)
+
+- **Why:** User needs a store-ready sheet with the design preview + color list + suggested quantities, printable on white.
+- **What shipped:**
+  - A "Print / Save PDF" button next to Save Merge Choices. Triggers `window.print()`.
+  - `@media print` CSS that hides upload zone, hero, merge toolbar, mix planner, selection strip, swatch toggles, finish / coats inputs, canvas, and all decorative chrome.
+  - Preview image and palette grid stay; background forced to white; per-chip card kept with swatch, hex, coverage %, finish + coats (via estimate row text), and suggested container plan.
+  - "Save as PDF" is the browser's built-in print destination — no new JS dependency added.
+- **Why no `jspdf` or similar:** Adding a client-side PDF library would cross AGENTS.md "Dependency versions ... are their own task" for a feature the browser already supports natively via print-to-PDF. The CSS approach produces the same artifact with zero dependency surface.
+- **Kept out:** Per-color price sub-totals, per-store formatting, palette color names (user hasn't assigned names yet in this prototype). Those are independently-scoped follow-ups.

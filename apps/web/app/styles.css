@@ -1,4 +1,4 @@
-/* added for per-chip finish selector + inline field variant */
+/* added for per-chip finish / coats selectors + inline field variant */
 .field-inline {
   flex-direction: row;
   align-items: center;
@@ -10,7 +10,8 @@
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
-.field-inline > select {
+.field-inline > select,
+.field-inline > input {
   flex: 1;
   padding: 0.25rem 0.5rem;
   font-size: 0.9rem;
@@ -19,8 +20,103 @@
   background: rgba(255, 250, 243, 0.9);
   color: var(--ink);
 }
+.field-inline > input[type="number"] {
+  max-width: 5rem;
+}
 .swatch-finish {
   margin-top: 0.4rem;
+}
+.swatch-coats {
+  margin-top: 0.3rem;
+}
+
+.print-button {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  cursor: pointer;
+  font: inherit;
+}
+.print-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Print / Save-as-PDF layout: keep only the preview image and palette list,
+   force white background, and suppress controls so the sheet is store-ready. */
+@media print {
+  html,
+  body,
+  .page-shell {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  .site-header,
+  .hero,
+  .hero-panel,
+  .upload-zone,
+  .merge-toolbar,
+  .mix-plan-panel,
+  .selection-strip,
+  .status,
+  .empty-frame,
+  .empty-selection,
+  .empty-results,
+  .swatch-toggle,
+  .swatch-finish,
+  .swatch-coats,
+  .hidden-canvas {
+    display: none !important;
+  }
+  .panel,
+  .results-panel {
+    background: #ffffff !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  .workspace-grid,
+  .summary-strip,
+  .section-head {
+    background: #ffffff !important;
+  }
+  .preview-frame {
+    border: 1px solid #cccccc;
+    margin-bottom: 1rem;
+    background: #ffffff !important;
+  }
+  .preview-image {
+    max-width: 100%;
+    max-height: 45vh;
+    object-fit: contain;
+  }
+  .palette-grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 0.75rem !important;
+    page-break-inside: auto;
+  }
+  .swatch-card {
+    background: #ffffff !important;
+    border: 1px solid #cccccc !important;
+    box-shadow: none !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .swatch {
+    border: 1px solid #999999 !important;
+  }
+  .estimate-row {
+    color: #000000 !important;
+  }
+  .section-head h2::after {
+    content: " — print version";
+    color: #666666;
+    font-weight: normal;
+  }
 }
 
 :root {

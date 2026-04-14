@@ -11,6 +11,7 @@ export type PaintBrandFinish = {
 
 export type PaintBrandPrices = {
   currency: string;
+  sample: number;
   quart: number;
   gallon: number;
   as_of?: string;
@@ -67,8 +68,15 @@ export function validateCatalog(catalog: PaintBrandCatalog) {
       throw new Error(`Coverage defaults must sit within the min/max range for brand ${brand.id}.`);
     }
 
-    if (!brand.prices || !(brand.prices.quart > 0) || !(brand.prices.gallon > 0)) {
-      throw new Error(`Brand ${brand.id} must have positive prices.quart and prices.gallon.`);
+    if (
+      !brand.prices ||
+      !(brand.prices.sample > 0) ||
+      !(brand.prices.quart > 0) ||
+      !(brand.prices.gallon > 0)
+    ) {
+      throw new Error(
+        `Brand ${brand.id} must have positive prices.sample, prices.quart, and prices.gallon.`
+      );
     }
 
     if (!brand.finishes?.length) {

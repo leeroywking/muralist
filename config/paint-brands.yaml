@@ -10,6 +10,11 @@
 # glossier ones on the same paint). Per-finish coverage is not published
 # per-brand in a consistent way; refine as brand-specific data lands.
 #
+# Sample-size cans are 8oz (1/16 gallon) by convention across the three
+# seeded brands. Muralists use them for detail colors where a quart would
+# over-buy. We do not store a separate sample_coverage_sqft because sample
+# coverage follows directly from brand coverage * 0.0625 (volume fraction).
+#
 # TODO: Add an automated quarterly refresh so price / finish drift doesn't
 # silently invalidate the planning defaults.
 
@@ -35,6 +40,7 @@ brands:
       - https://paintstrategies.com/sherwin-williams-paint-cost/
     prices:
       currency: USD
+      sample: 9.99
       quart: 24.99
       gallon: 60.49
       as_of: "2026-04"
@@ -69,6 +75,7 @@ brands:
       - https://www.valspar.com/en/products/interior-paints-primers/signature-interior-paint-primer
     prices:
       currency: USD
+      sample: 5.98
       quart: 14.98
       gallon: 39.98
       as_of: "2026-04"
@@ -102,6 +109,7 @@ brands:
       - https://www.homedepot.com/b/Paint-Paint-Colors/BEHR-PREMIUM-PLUS/Interior-Paint/N-5yc1vZcaw8ZgaoZ1z0q3xf
     prices:
       currency: USD
+      sample: 5.48
       quart: 17.98
       gallon: 29.98
       as_of: "2026-04"
