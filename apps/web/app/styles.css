@@ -1,3 +1,28 @@
+/* added for per-chip finish selector + inline field variant */
+.field-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+.field-inline > span {
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.field-inline > select {
+  flex: 1;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.9rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: rgba(255, 250, 243, 0.9);
+  color: var(--ink);
+}
+.swatch-finish {
+  margin-top: 0.4rem;
+}
+
 :root {
   --bg: #f4ecdf;
   --bg-accent: #e5d4ba;
