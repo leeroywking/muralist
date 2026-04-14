@@ -36,6 +36,11 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Build workspace dependencies
+        run: |
+          npm run build --workspace @muralist/config
+          npm run build --workspace @muralist/core
+
       - name: Build web export for preview
         env:
           GITHUB_PAGES: "true"
