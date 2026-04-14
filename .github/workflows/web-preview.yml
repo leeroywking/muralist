@@ -3,7 +3,7 @@ name: Web Preview
 on:
   push:
     branches:
-      - feat/color-mix-planner
+      - "feat/**"
 
 jobs:
   deploy-preview:
@@ -17,6 +17,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Compute preview slug
+        id: slug
+        run: |
+          # Turn "feat/estimator-accuracy-bundle" into "estimator-accuracy-bundle"
+          # so each feature branch lands at /muralist/previews/<slug>/.
+          raw="${GITHUB_REF_NAME#feat/}"
+          slug="${raw//\//-}"
+          echo "slug=${slug}" >> "$GITHUB_OUTPUT"
+          echo "base_path=/muralist/previews/${slug}" >> "$GITHUB_OUTPUT"
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -29,13 +39,15 @@ jobs:
       - name: Build web export for preview
         env:
           GITHUB_PAGES: "true"
-          GITHUB_PAGES_BASE_PATH: "/muralist/previews/color-mix-planner"
+          GITHUB_PAGES_BASE_PATH: ${{ steps.slug.outputs.base_path }}
         run: npm run build --workspace @muralist/web
 
       - name: Add .nojekyll marker
         run: touch apps/web/out/.nojekyll
 
       - name: Publish preview to gh-pages
+        env:
+          PREVIEW_SLUG: ${{ steps.slug.outputs.slug }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -45,8 +57,8 @@ jobs:
           else
             git worktree add -b gh-pages /tmp/gh-pages
           fi
-          mkdir -p /tmp/gh-pages/previews/color-mix-planner
-          rsync -a --delete --exclude .git apps/web/out/ /tmp/gh-pages/previews/color-mix-planner/
+          mkdir -p "/tmp/gh-pages/previews/${PREVIEW_SLUG}"
+          rsync -a --delete --exclude .git "apps/web/out/" "/tmp/gh-pages/previews/${PREVIEW_SLUG}/"
           touch /tmp/gh-pages/.nojekyll
           cd /tmp/gh-pages
           git add .
@@ -54,5 +66,5 @@ jobs:
             echo "No preview changes to publish."
             exit 0
           fi
-          git commit -m "Deploy preview feat/color-mix-planner from ${GITHUB_SHA}"
+          git commit -m "Deploy preview ${GITHUB_REF_NAME} from ${GITHUB_SHA}"
           git push origin HEAD:gh-pages
