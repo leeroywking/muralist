@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import type { PaintBrandCatalog } from "@muralist/config";
 import { loadPaintBrandCatalog } from "@muralist/config";
 import {
+  compareAspectRatios,
+  deriveColorAreaEstimates,
+  deriveGridSpec,
   estimatePaintRequirement,
   getAuthCapabilities,
   suggestContainersForColors
@@ -13,6 +16,87 @@ test("guest mode cannot persist data", () => {
 
   assert.equal(auth.mode, "oauth_only");
   assert.equal(auth.guest.canPersistData, false);
+});
+
+test("scaled grid derives full cells and partial wall edges from mural dimensions", () => {
+  const grid = deriveGridSpec({ widthFt: 17, heightFt: 9 }, 4);
+
+  assert.deepEqual(grid, {
+    cellSizeFt: 4,
+    columns: 5,
+    rows: 3,
+    cellAreaSqFt: 16,
+    hasPartialColumn: true,
+    hasPartialRow: true,
+    finalColumnWidthFt: 1,
+    finalRowHeightFt: 1
+  });
+});
+
+test("scaled grid keeps exact wall divisions as full edge cells", () => {
+  const grid = deriveGridSpec({ widthFt: 20, heightFt: 12 }, 2);
+
+  assert.equal(grid.columns, 10);
+  assert.equal(grid.rows, 6);
+  assert.equal(grid.hasPartialColumn, false);
+  assert.equal(grid.hasPartialRow, false);
+  assert.equal(grid.finalColumnWidthFt, 2);
+  assert.equal(grid.finalRowHeightFt, 2);
+});
+
+test("scaled grid rejects invalid wall dimensions and cell sizes", () => {
+  assert.throws(
+    () => deriveGridSpec({ widthFt: 0, heightFt: 12 }, 2),
+    /Wall width must be greater than zero/
+  );
+  assert.throws(
+    () => deriveGridSpec({ widthFt: 20, heightFt: -1 }, 2),
+    /Wall height must be greater than zero/
+  );
+  assert.throws(
+    () => deriveGridSpec({ widthFt: 20, heightFt: 12 }, 0),
+    /Grid cell size must be greater than zero/
+  );
+});
+
+test("aspect ratio report warns when uploaded artwork and wall dimensions clearly diverge", () => {
+  const report = compareAspectRatios(
+    { widthPx: 400, heightPx: 300 },
+    { widthFt: 16, heightFt: 4 }
+  );
+
+  assert.equal(report.sourceAspectRatio, 4 / 3);
+  assert.equal(report.wallAspectRatio, 4);
+  assert.equal(report.ratioDelta, 3);
+  assert.equal(report.shouldWarn, true);
+});
+
+test("aspect ratio report does not warn for close source and wall ratios", () => {
+  const report = compareAspectRatios(
+    { widthPx: 1600, heightPx: 900 },
+    { widthFt: 16, heightFt: 9.1 }
+  );
+
+  assert.equal(report.shouldWarn, false);
+});
+
+test("color area estimates convert palette coverage into mural square footage", () => {
+  const estimates = deriveColorAreaEstimates(1200, [
+    { id: "background", coveragePercent: 50 },
+    { id: "detail", coveragePercent: 12.5 }
+  ]);
+
+  assert.deepEqual(estimates, [
+    { id: "background", coveragePercent: 50, areaSqFt: 600 },
+    { id: "detail", coveragePercent: 12.5, areaSqFt: 150 }
+  ]);
+});
+
+test("color area estimates reject negative coverage", () => {
+  assert.throws(
+    () => deriveColorAreaEstimates(1200, [{ id: "bad", coveragePercent: -1 }]),
+    /coveragePercent must be zero or greater/
+  );
 });
 
 test("paint estimation uses configured brand defaults", async () => {

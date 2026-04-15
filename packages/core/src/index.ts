@@ -75,6 +75,40 @@ export type SuggestContainersInput = {
   colors: ColorCoverage[];
 };
 
+export type WallDimensions = {
+  widthFt: number;
+  heightFt: number;
+};
+
+export type GridSpec = {
+  cellSizeFt: number;
+  columns: number;
+  rows: number;
+  cellAreaSqFt: number;
+  hasPartialColumn: boolean;
+  hasPartialRow: boolean;
+  finalColumnWidthFt: number;
+  finalRowHeightFt: number;
+};
+
+export type AspectRatioReport = {
+  sourceAspectRatio: number;
+  wallAspectRatio: number;
+  ratioDelta: number;
+  shouldWarn: boolean;
+};
+
+export type ColorAreaInput = {
+  id: string;
+  coveragePercent: number;
+};
+
+export type ColorAreaEstimate = {
+  id: string;
+  coveragePercent: number;
+  areaSqFt: number;
+};
+
 export function getAuthCapabilities(): AuthCapabilities {
   return {
     mode: "oauth_only",
@@ -89,6 +123,73 @@ export function getAuthCapabilities(): AuthCapabilities {
       ]
     }
   };
+}
+
+export function deriveGridSpec(
+  wall: WallDimensions,
+  cellSizeFt: number
+): GridSpec {
+  assertPositiveFinite("Wall width", wall.widthFt);
+  assertPositiveFinite("Wall height", wall.heightFt);
+  assertPositiveFinite("Grid cell size", cellSizeFt);
+
+  const columns = Math.ceil(wall.widthFt / cellSizeFt);
+  const rows = Math.ceil(wall.heightFt / cellSizeFt);
+  const finalColumnWidthFt = remainderOrFull(wall.widthFt, cellSizeFt);
+  const finalRowHeightFt = remainderOrFull(wall.heightFt, cellSizeFt);
+
+  return {
+    cellSizeFt,
+    columns,
+    rows,
+    cellAreaSqFt: cellSizeFt * cellSizeFt,
+    hasPartialColumn: finalColumnWidthFt < cellSizeFt,
+    hasPartialRow: finalRowHeightFt < cellSizeFt,
+    finalColumnWidthFt,
+    finalRowHeightFt
+  };
+}
+
+export function compareAspectRatios(
+  source: { widthPx: number; heightPx: number },
+  wall: WallDimensions,
+  warningThreshold = 0.05
+): AspectRatioReport {
+  assertPositiveFinite("Source width", source.widthPx);
+  assertPositiveFinite("Source height", source.heightPx);
+  assertPositiveFinite("Wall width", wall.widthFt);
+  assertPositiveFinite("Wall height", wall.heightFt);
+  assertPositiveFinite("Warning threshold", warningThreshold);
+
+  const sourceAspectRatio = source.widthPx / source.heightPx;
+  const wallAspectRatio = wall.widthFt / wall.heightFt;
+  const ratioDelta = wallAspectRatio / sourceAspectRatio;
+
+  return {
+    sourceAspectRatio,
+    wallAspectRatio,
+    ratioDelta,
+    shouldWarn: Math.abs(Math.log(ratioDelta)) > warningThreshold
+  };
+}
+
+export function deriveColorAreaEstimates(
+  wallAreaSqFt: number,
+  colors: ColorAreaInput[]
+): ColorAreaEstimate[] {
+  assertPositiveFinite("Wall area", wallAreaSqFt);
+
+  return colors.map((color) => {
+    if (!Number.isFinite(color.coveragePercent) || color.coveragePercent < 0) {
+      throw new Error(`Color ${color.id} coveragePercent must be zero or greater.`);
+    }
+
+    return {
+      id: color.id,
+      coveragePercent: color.coveragePercent,
+      areaSqFt: wallAreaSqFt * (color.coveragePercent / 100)
+    };
+  });
 }
 
 export function estimatePaintRequirement(
@@ -269,4 +370,19 @@ function packContainersForColor(
 
 function roundToTenths(value: number) {
   return Math.round(value * 10) / 10;
+}
+
+function assertPositiveFinite(label: string, value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${label} must be greater than zero.`);
+  }
+}
+
+function remainderOrFull(value: number, divisor: number) {
+  const remainder = value % divisor;
+  return nearlyEqual(remainder, 0) ? divisor : remainder;
+}
+
+function nearlyEqual(left: number, right: number) {
+  return Math.abs(left - right) < 1e-9;
 }

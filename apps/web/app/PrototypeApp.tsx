@@ -3,11 +3,18 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import type { PaintBrandCatalog } from "@muralist/config";
 import type {
+  AspectRatioReport,
   ColorContainerPlan,
   ContainerPlan,
-  ContainerPlanEntry
+  ContainerPlanEntry,
+  GridSpec
 } from "@muralist/core";
-import { suggestContainersForColors } from "@muralist/core";
+import {
+  compareAspectRatios,
+  deriveColorAreaEstimates,
+  deriveGridSpec,
+  suggestContainersForColors
+} from "@muralist/core";
 
 type PaletteColor = {
   id: string;
@@ -23,12 +30,42 @@ type AnalysisResult = {
   colors: PaletteColor[];
 };
 
+type FieldSheetColor = {
+  colorId: string;
+  hex: string;
+  coveragePercent: number;
+  areaSqFt: number;
+  finishLabel: string;
+  coats: number;
+  packageLabel: string;
+  requiredGallons: number;
+  estimatedCost: number;
+};
+
+type FieldSheetModel = {
+  fileName: string;
+  sourceSize: { widthPx: number; heightPx: number };
+  wall: { widthFt: number; heightFt: number; areaSqFt: number };
+  grid: GridSpec;
+  aspectRatio: AspectRatioReport;
+  brandLabel: string;
+  retailer: string;
+  currency: string;
+  colors: FieldSheetColor[];
+  totals: {
+    packageLabel: string;
+    requiredGallons: number;
+    estimatedCost: number;
+  };
+};
+
 type SavedMergePlan = {
   savedAt: string;
   fileName: string;
   selectedBrandId: string;
   wallLength: string;
   wallWidth: string;
+  gridCellSize: string;
   coats: string;
   wastePercent: string;
   sourceAnalysis: AnalysisResult | null;
@@ -64,6 +101,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   const [selectedBrandId, setSelectedBrandId] = useState(defaultBrand.id);
   const [wallLength, setWallLength] = useState("25");
   const [wallWidth, setWallWidth] = useState("10");
+  const [gridCellSize, setGridCellSize] = useState("2");
   const [coats, setCoats] = useState(String(defaultBrand.default_coats));
   const [wastePercent, setWastePercent] = useState("10");
   const [defaultFinishId, setDefaultFinishId] = useState<string>(defaultBrand.finishes[0]!.id);
@@ -80,6 +118,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     catalog.brands.find((brand) => brand.id === selectedBrandId) ?? defaultBrand;
   const parsedLength = Number(wallLength);
   const parsedWidth = Number(wallWidth);
+  const parsedGridCellSize = Number(gridCellSize);
   const parsedCoats = Number(coats);
   const parsedWaste = Number(wastePercent) / 100;
   const wallArea = parsedLength * parsedWidth;
@@ -90,6 +129,8 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     parsedLength > 0 &&
     Number.isFinite(parsedWidth) &&
     parsedWidth > 0 &&
+    Number.isFinite(parsedGridCellSize) &&
+    parsedGridCellSize > 0 &&
     Number.isFinite(parsedCoats) &&
     parsedCoats > 0 &&
     Number.isFinite(parsedWaste) &&
@@ -126,6 +167,77 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     colorCoatsOverrides,
     paletteColors,
     estimateReady
+  ]);
+
+  const fieldSheetModel: FieldSheetModel | null = useMemo(() => {
+    if (!estimateReady || !sourceAnalysis || !containerPlan) {
+      return null;
+    }
+
+    const grid = deriveGridSpec(
+      { widthFt: parsedLength, heightFt: parsedWidth },
+      parsedGridCellSize
+    );
+    const aspectRatio = compareAspectRatios(
+      { widthPx: sourceAnalysis.width, heightPx: sourceAnalysis.height },
+      { widthFt: parsedLength, heightFt: parsedWidth }
+    );
+    const colorAreas = deriveColorAreaEstimates(
+      wallArea,
+      paletteColors.map((color) => ({
+        id: color.id,
+        coveragePercent: color.coveragePercent
+      }))
+    );
+    const areaByColorId = new Map(colorAreas.map((color) => [color.id, color.areaSqFt]));
+    const totalRequiredGallons = containerPlan.perColor.reduce(
+      (sum, entry) => sum + entry.requiredGallons,
+      0
+    );
+
+    return {
+      fileName,
+      sourceSize: { widthPx: sourceAnalysis.width, heightPx: sourceAnalysis.height },
+      wall: { widthFt: parsedLength, heightFt: parsedWidth, areaSqFt: wallArea },
+      grid,
+      aspectRatio,
+      brandLabel: selectedBrand.display_name,
+      retailer: selectedBrand.retailer,
+      currency: containerPlan.currency,
+      colors: paletteColors.map((color) => {
+        const plan = containerPlan.perColor.find((entry) => entry.colorId === color.id);
+        const finish = selectedBrand.finishes.find((entry) => entry.id === plan?.finishId);
+        return {
+          colorId: color.id,
+          hex: color.hex,
+          coveragePercent: color.coveragePercent,
+          areaSqFt: areaByColorId.get(color.id) ?? 0,
+          finishLabel: finish?.display_name ?? plan?.finishId ?? defaultFinishId,
+          coats: plan?.coats ?? parsedCoats,
+          packageLabel: plan ? plan.packages.map(formatContainerEntry).join(" + ") : "--",
+          requiredGallons: plan?.requiredGallons ?? 0,
+          estimatedCost: plan?.estimatedCost ?? 0
+        };
+      }),
+      totals: {
+        packageLabel: formatContainerTotals(containerPlan.totals),
+        requiredGallons: totalRequiredGallons,
+        estimatedCost: containerPlan.totals.estimatedCost
+      }
+    };
+  }, [
+    containerPlan,
+    defaultFinishId,
+    estimateReady,
+    fileName,
+    paletteColors,
+    parsedCoats,
+    parsedGridCellSize,
+    parsedLength,
+    parsedWidth,
+    selectedBrand,
+    sourceAnalysis,
+    wallArea
   ]);
 
   useEffect(() => {
@@ -367,6 +479,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       selectedBrandId,
       wallLength,
       wallWidth,
+      gridCellSize,
       coats,
       wastePercent,
       sourceAnalysis,
@@ -390,6 +503,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setSelectedBrandId(savedMergePlan.selectedBrandId);
     setWallLength(savedMergePlan.wallLength);
     setWallWidth(savedMergePlan.wallWidth);
+    setGridCellSize(savedMergePlan.gridCellSize ?? "2");
     setCoats(savedMergePlan.coats);
     setWastePercent(savedMergePlan.wastePercent);
     setSourceAnalysis(savedMergePlan.sourceAnalysis);
@@ -511,7 +625,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
             </label>
 
             <label className="field">
-              <span>Length (ft)</span>
+              <span>Wall width (ft)</span>
               <input
                 type="number"
                 min="1"
@@ -521,13 +635,22 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
             </label>
 
             <label className="field">
-              <span>Width (ft)</span>
+              <span>Wall height (ft)</span>
               <input
                 type="number"
                 min="1"
                 value={wallWidth}
                 onChange={(event) => setWallWidth(event.target.value)}
               />
+            </label>
+
+            <label className="field">
+              <span>Grid cells</span>
+              <select value={gridCellSize} onChange={(event) => setGridCellSize(event.target.value)}>
+                <option value="1">1 ft squares</option>
+                <option value="2">2 ft squares</option>
+                <option value="4">4 ft squares</option>
+              </select>
             </label>
 
             <label className="field">
@@ -671,85 +794,12 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
               )}
             </div>
 
-            {containerPlan ? (
-              <section className="print-summary" aria-labelledby="print-summary-heading">
-                <header className="print-summary-head">
-                  <div>
-                    <h3 id="print-summary-heading">Paint Plan</h3>
-                    <p>
-                      {selectedBrand.display_name} ({selectedBrand.retailer}) ·{" "}
-                      {Number.isFinite(wallArea) && wallArea > 0 ? `${wallArea.toFixed(0)} sq ft` : "wall size TBD"} ·{" "}
-                      {paletteColors.length} colors
-                    </p>
-                  </div>
-                  <div className="print-summary-total">
-                    <span className="metric-label">Estimated total</span>
-                    <strong>{formatCurrency(containerPlan.totals.estimatedCost, containerPlan.currency)}</strong>
-                  </div>
-                </header>
-                <div className="print-summary-images">
-                  {previewUrl ? (
-                    <figure>
-                      <img alt="Original artwork" src={previewUrl} />
-                      <figcaption>Original</figcaption>
-                    </figure>
-                  ) : null}
-                  {flattenedImageUrl ? (
-                    <figure>
-                      <img alt="Recolored using the merged palette" src={flattenedImageUrl} />
-                      <figcaption>Using merged palette</figcaption>
-                    </figure>
-                  ) : null}
-                </div>
-                <table className="print-summary-table">
-                  <thead>
-                    <tr>
-                      <th scope="col">Color</th>
-                      <th scope="col">Hex</th>
-                      <th scope="col">Coverage</th>
-                      <th scope="col">Finish</th>
-                      <th scope="col">Coats</th>
-                      <th scope="col">Order</th>
-                      <th scope="col">Expected use</th>
-                      <th scope="col">Price</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {paletteColors.map((color) => {
-                      const plan = planByColorId.get(color.id);
-                      if (!plan) return null;
-                      const finish = selectedBrand.finishes.find((entry) => entry.id === plan.finishId);
-                      return (
-                        <tr key={color.id}>
-                          <th scope="row">
-                            <span className="print-swatch" style={{ backgroundColor: color.hex }} aria-hidden="true" />
-                          </th>
-                          <td>{color.hex}</td>
-                          <td>{color.coveragePercent.toFixed(1)}%</td>
-                          <td>{finish ? finish.display_name : plan.finishId}</td>
-                          <td>{plan.coats}</td>
-                          <td>{plan.packages.map(formatContainerEntry).join(" + ")}</td>
-                          <td>{formatOunces(plan.requiredGallons)}</td>
-                          <td>{formatCurrency(plan.estimatedCost, containerPlan.currency)}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                  <tfoot>
-                    <tr>
-                      <th scope="row" colSpan={5}>
-                        Totals
-                      </th>
-                      <td>{formatContainerTotals(containerPlan.totals)}</td>
-                      <td>{formatOunces(containerPlan.perColor.reduce((sum, entry) => sum + entry.requiredGallons, 0))}</td>
-                      <td>{formatCurrency(containerPlan.totals.estimatedCost, containerPlan.currency)}</td>
-                    </tr>
-                  </tfoot>
-                </table>
-                <footer className="print-summary-footnote">
-                  Prices are planning snapshots — verify in-store before purchase.
-                </footer>
-              </section>
+            {fieldSheetModel ? (
+              <FieldSheet
+                model={fieldSheetModel}
+                originalImageUrl={previewUrl}
+                reducedImageUrl={flattenedImageUrl}
+              />
             ) : null}
 
             <div className="palette-grid">
@@ -814,6 +864,177 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
 
       <canvas className="hidden-canvas" ref={canvasRef} />
     </main>
+  );
+}
+
+function FieldSheet({
+  model,
+  originalImageUrl,
+  reducedImageUrl
+}: {
+  model: FieldSheetModel;
+  originalImageUrl: string | null;
+  reducedImageUrl: string | null;
+}) {
+  const gridLines = buildGridLinePositions(model.wall, model.grid);
+  const sourceAspectRatio = model.sourceSize.widthPx / model.sourceSize.heightPx;
+  const wallAspectRatio = model.wall.widthFt / model.wall.heightFt;
+
+  return (
+    <section className="print-summary field-sheet" aria-labelledby="field-sheet-heading">
+      <header className="print-summary-head field-sheet-head">
+        <div>
+          <p className="eyebrow">Maquette / PDF Field Sheet</p>
+          <h3 id="field-sheet-heading">Scaled Paint Plan</h3>
+          <p>
+            {model.brandLabel} ({model.retailer}) · {model.wall.areaSqFt.toFixed(0)} sq ft ·{" "}
+            {model.colors.length} colors · {model.grid.cellSizeFt} ft grid
+          </p>
+        </div>
+        <div className="print-summary-total">
+          <span className="metric-label">Estimated total</span>
+          <strong>{formatCurrency(model.totals.estimatedCost, model.currency)}</strong>
+          <small>{model.totals.packageLabel}</small>
+        </div>
+      </header>
+
+      {model.aspectRatio.shouldWarn ? (
+        <div className="ratio-warning" role="status">
+          Your wall ratio differs from the uploaded artwork. The mural preview is stretched to the wall size so you can catch the mismatch before painting.
+        </div>
+      ) : null}
+
+      <div className="field-sheet-grid">
+        <aside className="field-sheet-notes" aria-label="Artist notes">
+          <strong>Artist mixing notes</strong>
+          <span>Mix ratios, substitutions, store notes, and final paint choices.</span>
+          {Array.from({ length: 8 }, (_, index) => (
+            <div className="notes-line" key={index} />
+          ))}
+        </aside>
+
+        <div className="field-sheet-visuals">
+          <GridPreview
+            aspectRatio={sourceAspectRatio}
+            gridLines={gridLines}
+            imageFit="fill"
+            imageUrl={originalImageUrl}
+            label="Original artwork"
+            note="Source ratio preserved. Grid spacing may differ by direction when the wall ratio does not match."
+          />
+          <GridPreview
+            aspectRatio={wallAspectRatio}
+            gridLines={gridLines}
+            imageFit="fill"
+            imageUrl={reducedImageUrl}
+            label="Reduced mural preview"
+            note="Fit to entered wall dimensions. Grid cells represent real-world spacing."
+          />
+          <dl className="field-sheet-scale">
+            <div>
+              <dt>Wall</dt>
+              <dd>{model.wall.widthFt} ft × {model.wall.heightFt} ft</dd>
+            </div>
+            <div>
+              <dt>Grid</dt>
+              <dd>{model.grid.columns} × {model.grid.rows} cells at {model.grid.cellSizeFt} ft</dd>
+            </div>
+            <div>
+              <dt>Edge cells</dt>
+              <dd>{formatPartialGridNotice(model.grid)}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div className="field-sheet-data">
+          <table className="print-summary-table field-sheet-table">
+            <thead>
+              <tr>
+                <th scope="col">Paint-over swatch</th>
+                <th scope="col">Plan</th>
+              </tr>
+            </thead>
+            <tbody>
+              {model.colors.map((color) => (
+                <tr key={color.colorId}>
+                  <th scope="row">
+                    <span
+                      className="paint-over-swatch"
+                      style={{ backgroundColor: color.hex }}
+                      aria-label={`Paint-over swatch for ${color.hex}`}
+                    />
+                  </th>
+                  <td>
+                    <strong>{color.hex}</strong>
+                    <span>{color.coveragePercent.toFixed(1)}% · {color.areaSqFt.toFixed(1)} sq ft</span>
+                    <span>{color.finishLabel} · {color.coats} coats</span>
+                    <span>{color.packageLabel}</span>
+                    <span>{formatOunces(color.requiredGallons)} · {formatCurrency(color.estimatedCost, model.currency)}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <th scope="row">Totals</th>
+                <td>
+                  <strong>{model.totals.packageLabel}</strong>
+                  <span>{formatOunces(model.totals.requiredGallons)} · {formatCurrency(model.totals.estimatedCost, model.currency)}</span>
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <footer className="print-summary-footnote">
+        Muralist estimates area and quantity. Paint over swatches with your final mixes before matching in store. Prices are planning snapshots.
+      </footer>
+    </section>
+  );
+}
+
+function GridPreview({
+  aspectRatio,
+  gridLines,
+  imageFit,
+  imageUrl,
+  label,
+  note
+}: {
+  aspectRatio: number;
+  gridLines: { vertical: number[]; horizontal: number[] };
+  imageFit: "contain" | "fill";
+  imageUrl: string | null;
+  label: string;
+  note: string;
+}) {
+  return (
+    <figure className="grid-preview">
+      <div className="grid-preview-frame" style={{ aspectRatio }}>
+        {imageUrl ? (
+          <img
+            alt={label}
+            className={`grid-preview-image grid-preview-image-${imageFit}`}
+            src={imageUrl}
+          />
+        ) : (
+          <div className="grid-preview-empty">Preview will appear here.</div>
+        )}
+        <svg className="grid-overlay" aria-hidden="true" focusable="false" viewBox="0 0 100 100" preserveAspectRatio="none">
+          {gridLines.vertical.map((position) => (
+            <line key={`v-${position}`} x1={position} x2={position} y1="0" y2="100" />
+          ))}
+          {gridLines.horizontal.map((position) => (
+            <line key={`h-${position}`} x1="0" x2="100" y1={position} y2={position} />
+          ))}
+        </svg>
+      </div>
+      <figcaption>
+        <strong>{label}</strong>
+        <span>{note}</span>
+      </figcaption>
+    </figure>
   );
 }
 
@@ -975,6 +1196,39 @@ function rgbToHex([red, green, blue]: [number, number, number]) {
 }
 
 const FLUID_OUNCES_PER_GALLON = 128;
+
+function buildGridLinePositions(
+  wall: FieldSheetModel["wall"],
+  grid: GridSpec
+) {
+  const vertical: number[] = [];
+  const horizontal: number[] = [];
+
+  for (let column = 1; column < grid.columns; column += 1) {
+    vertical.push(Math.min(100, (column * grid.cellSizeFt / wall.widthFt) * 100));
+  }
+
+  for (let row = 1; row < grid.rows; row += 1) {
+    horizontal.push(Math.min(100, (row * grid.cellSizeFt / wall.heightFt) * 100));
+  }
+
+  return { vertical, horizontal };
+}
+
+function formatPartialGridNotice(grid: GridSpec) {
+  if (!grid.hasPartialColumn && !grid.hasPartialRow) {
+    return "All cells are full size.";
+  }
+
+  const parts: string[] = [];
+  if (grid.hasPartialColumn) {
+    parts.push(`last column ${roundToTenths(grid.finalColumnWidthFt)} ft wide`);
+  }
+  if (grid.hasPartialRow) {
+    parts.push(`last row ${roundToTenths(grid.finalRowHeightFt)} ft tall`);
+  }
+  return parts.join("; ");
+}
 
 function flattenImageToPalette(
   source: { data: Uint8ClampedArray; width: number; height: number },
