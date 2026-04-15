@@ -102,10 +102,15 @@ type ProSettings = {
   rememberOnDevice: boolean;
 };
 
+// Calibrated against the 12-per-channel quantization applied in
+// analyzeLoadedImage. The minimum inter-cluster Euclidean distance is
+// sqrt(3) * 12 ≈ 20.8, so any threshold near that is effectively inert.
+// Presets sit above the quantization floor to give meaningful behavior on
+// real captured palettes.
 const SENSITIVITY_PRESETS: Record<Exclude<AutoCombineSensitivity, "custom">, number> = {
-  conservative: 10,
-  balanced: 18,
-  aggressive: 28
+  conservative: 24,
+  balanced: 36,
+  aggressive: 54
 };
 
 const DEFAULT_PRO_SETTINGS: ProSettings = {
