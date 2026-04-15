@@ -460,27 +460,43 @@ export function classifyPaletteColors(
     coverageById.set(color.id, (color.pixelCount / totalPixels) * 100);
   }
 
-  // Phase 1: identify extreme (buy) colors. A color is extreme if no pair of
-  // *other* palette colors can express it as a segment interpolation within
-  // the residual threshold. In a gradient, the two endpoints are extreme and
-  // every middle step is interior. Coverage order does not drive this — the
-  // geometry of the palette does.
+  // Phase 0: near-duplicate dedup. Real-image palettes capture many colors
+  // that are geometric neighbors of each other in RGB space without being on
+  // a three-point mixing line. The line-fitting algorithm alone misses them.
+  // Here we merge any pair whose Euclidean RGB distance falls below the
+  // residual threshold — the lower-coverage member absorbs into the
+  // higher-coverage one, silently (no mix recipe).
+  const dedupResult = dedupNearestNeighbors(colors, options.residualThreshold);
+  const survivors = dedupResult.survivors;
+  const dedupAbsorbs = dedupResult.absorbs; // id -> keeperId
+
+  if (survivors.length === 0) {
+    return colors.map((color) => ({
+      id: color.id,
+      classification: "absorb",
+      absorbedIntoId: dedupAbsorbs.get(color.id) ?? color.id
+    }));
+  }
+
+  // Phase 1: identify extreme (buy) colors among survivors. A color is
+  // extreme if no pair of *other* survivor colors can express it as a
+  // segment interpolation within the residual threshold. In a gradient, the
+  // two endpoints are extreme and every middle step is interior.
   const extremeIds = new Set<string>();
-  for (const candidate of colors) {
-    const others = colors.filter((color) => color.id !== candidate.id);
+  for (const candidate of survivors) {
+    const others = survivors.filter((color) => color.id !== candidate.id);
     const fit = findBestMixingPair(candidate, others, options.residualThreshold);
     if (!fit) {
       extremeIds.add(candidate.id);
     }
   }
 
-  // Degenerate fallback: if every color sits on some mixing line (possible
-  // for a palette of exactly 2 duplicated colors or all-collinear points),
-  // promote the highest-coverage color so we always have at least one buy.
+  // Degenerate fallback: if every survivor sits on some mixing line,
+  // promote the highest-coverage survivor so we always have at least one buy.
   if (extremeIds.size === 0) {
     let topId: string | null = null;
     let topPixels = -Infinity;
-    for (const color of colors) {
+    for (const color of survivors) {
       if (color.pixelCount > topPixels) {
         topPixels = color.pixelCount;
         topId = color.id;
@@ -489,11 +505,32 @@ export function classifyPaletteColors(
     if (topId) extremeIds.add(topId);
   }
 
-  const extremes = colors.filter((color) => extremeIds.has(color.id));
+  const extremes = survivors.filter((color) => extremeIds.has(color.id));
   const classifications = new Map<string, ClassifiedColor>();
 
-  // Phase 2: interior colors classify as mix or absorb based on coverage.
-  for (const color of colors) {
+  // Phase 2: interior survivors classify as mix or absorb based on coverage.
+  // Recompute coverage using the *absorbed* pixel counts so dedup-absorbed
+  // members contribute to their keeper's mix-threshold check.
+  const adjustedPixelsById = new Map<string, number>();
+  for (const survivor of survivors) {
+    adjustedPixelsById.set(survivor.id, survivor.pixelCount);
+  }
+  for (const [absorbedId, keeperId] of dedupAbsorbs.entries()) {
+    const absorbed = colors.find((color) => color.id === absorbedId);
+    if (!absorbed) continue;
+    const current = adjustedPixelsById.get(keeperId) ?? 0;
+    adjustedPixelsById.set(keeperId, current + absorbed.pixelCount);
+  }
+  const adjustedCoverageById = new Map<string, number>();
+  let adjustedTotal = 0;
+  for (const value of adjustedPixelsById.values()) adjustedTotal += value;
+  if (adjustedTotal > 0) {
+    for (const [id, pixels] of adjustedPixelsById.entries()) {
+      adjustedCoverageById.set(id, (pixels / adjustedTotal) * 100);
+    }
+  }
+
+  for (const color of survivors) {
     if (extremeIds.has(color.id)) {
       classifications.set(color.id, { id: color.id, classification: "buy" });
       continue;
@@ -501,13 +538,11 @@ export function classifyPaletteColors(
 
     const fit = findBestMixingPair(color, extremes, options.residualThreshold);
     if (!fit) {
-      // Should be unreachable given Phase 1, but fall back to buy if the
-      // extreme set somehow cannot explain this interior color.
       classifications.set(color.id, { id: color.id, classification: "buy" });
       continue;
     }
 
-    const coverage = coverageById.get(color.id) ?? 0;
+    const coverage = adjustedCoverageById.get(color.id) ?? coverageById.get(color.id) ?? 0;
     const { endpointA, endpointB, t } = fit;
 
     if (coverage >= options.mixCoveragePercent) {
@@ -531,7 +566,85 @@ export function classifyPaletteColors(
     }
   }
 
+  // Merge dedup-absorbed entries into the final output.
+  for (const [absorbedId, keeperId] of dedupAbsorbs.entries()) {
+    classifications.set(absorbedId, {
+      id: absorbedId,
+      classification: "absorb",
+      absorbedIntoId: keeperId
+    });
+  }
+
   return colors.map((color) => classifications.get(color.id)!);
+}
+
+function dedupNearestNeighbors(
+  colors: ClassifyPaletteInput[],
+  threshold: number
+): { survivors: ClassifyPaletteInput[]; absorbs: Map<string, string> } {
+  const survivors: ClassifyPaletteInput[] = colors.map((color) => ({ ...color }));
+  const absorbs = new Map<string, string>();
+
+  // Repeated nearest-pair merge. Each pass picks the tightest pair; the
+  // lower-pixelCount member absorbs into the higher-pixelCount one. Bounded
+  // by colors.length iterations so worst-case is O(N^3) — fine for palettes
+  // under ~100 colors.
+  while (survivors.length > 1) {
+    let bestDistance = Infinity;
+    let keeperIndex = -1;
+    let absorbedIndex = -1;
+
+    for (let i = 0; i < survivors.length; i += 1) {
+      for (let j = i + 1; j < survivors.length; j += 1) {
+        const a = survivors[i]!;
+        const b = survivors[j]!;
+        const dx = a.rgb[0] - b.rgb[0];
+        const dy = a.rgb[1] - b.rgb[1];
+        const dz = a.rgb[2] - b.rgb[2];
+        const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (distance >= threshold) continue;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          // Keeper = the one with more pixels, or lexicographically smaller
+          // id on ties for deterministic test output.
+          if (
+            a.pixelCount > b.pixelCount ||
+            (a.pixelCount === b.pixelCount && a.id.localeCompare(b.id) <= 0)
+          ) {
+            keeperIndex = i;
+            absorbedIndex = j;
+          } else {
+            keeperIndex = j;
+            absorbedIndex = i;
+          }
+        }
+      }
+    }
+
+    if (bestDistance === Infinity) break;
+
+    const keeper = survivors[keeperIndex]!;
+    const absorbed = survivors[absorbedIndex]!;
+
+    // Path-compress absorbs: if the keeper itself was later absorbed, the
+    // final keeper is the root of the absorb chain. (Cannot happen in this
+    // forward pass, but defensive.)
+    let finalKeeperId = keeper.id;
+    while (absorbs.has(finalKeeperId)) {
+      finalKeeperId = absorbs.get(finalKeeperId)!;
+    }
+
+    absorbs.set(absorbed.id, finalKeeperId);
+    // Also redirect any prior absorbers that pointed at `absorbed`.
+    for (const [id, target] of absorbs.entries()) {
+      if (target === absorbed.id) absorbs.set(id, finalKeeperId);
+    }
+
+    keeper.pixelCount += absorbed.pixelCount;
+    survivors.splice(absorbedIndex, 1);
+  }
+
+  return { survivors, absorbs };
 }
 
 function findBestMixingPair(

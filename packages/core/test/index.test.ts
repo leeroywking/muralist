@@ -517,6 +517,33 @@ test("classifyPaletteColors keeps a lone off-line accent as buy", () => {
   assert.equal(accent?.classification, "buy");
 });
 
+test("classifyPaletteColors deduplicates near-neighbors even when no mixing line exists", () => {
+  // Two tight clusters plus a distant outlier. No color is on a line between
+  // others, but each cluster has near-duplicate members that should collapse.
+  const colors: ClassifyPaletteInput[] = [
+    { id: "cluster-a-1", rgb: [200, 30, 30], pixelCount: 100 },
+    { id: "cluster-a-2", rgb: [205, 35, 32], pixelCount: 20 },
+    { id: "cluster-b-1", rgb: [30, 30, 200], pixelCount: 80 },
+    { id: "cluster-b-2", rgb: [34, 28, 198], pixelCount: 15 },
+    { id: "outlier", rgb: [40, 200, 40], pixelCount: 60 }
+  ];
+  const classifications = classifyPaletteColors(colors, {
+    residualThreshold: 30,
+    mixCoveragePercent: 5
+  });
+  const classByMap = new Map(classifications.map((entry) => [entry.id, entry]));
+
+  // Near-duplicates absorb into the higher-coverage keeper of their cluster.
+  assert.equal(classByMap.get("cluster-a-2")?.classification, "absorb");
+  assert.equal(classByMap.get("cluster-a-2")?.absorbedIntoId, "cluster-a-1");
+  assert.equal(classByMap.get("cluster-b-2")?.classification, "absorb");
+  assert.equal(classByMap.get("cluster-b-2")?.absorbedIntoId, "cluster-b-1");
+  // Remaining three are all independent buys.
+  assert.equal(classByMap.get("cluster-a-1")?.classification, "buy");
+  assert.equal(classByMap.get("cluster-b-1")?.classification, "buy");
+  assert.equal(classByMap.get("outlier")?.classification, "buy");
+});
+
 test("classifyPaletteColors with fewer than three colors marks every entry as buy", () => {
   const classifications = classifyPaletteColors(
     [
