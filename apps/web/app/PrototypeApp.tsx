@@ -45,6 +45,7 @@ type FieldSheetColor = {
 
 type FieldSheetModel = {
   fileName: string;
+  artistNotes: string;
   sourceSize: { widthPx: number; heightPx: number };
   wall: { widthFt: number; heightFt: number; areaSqFt: number };
   grid: GridSpec;
@@ -67,6 +68,7 @@ type SavedMergePlan = {
   wallLength: string;
   wallWidth: string;
   gridCellSize: string;
+  artistNotes?: string;
   coats: string;
   wastePercent: string;
   sourceAnalysis: AnalysisResult | null;
@@ -103,6 +105,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   const [wallLength, setWallLength] = useState("25");
   const [wallWidth, setWallWidth] = useState("10");
   const [gridCellSize, setGridCellSize] = useState("2");
+  const [artistNotes, setArtistNotes] = useState("");
   const [coats, setCoats] = useState(String(defaultBrand.default_coats));
   const [wastePercent, setWastePercent] = useState("10");
   const [defaultFinishId, setDefaultFinishId] = useState<string>(defaultBrand.finishes[0]!.id);
@@ -198,6 +201,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
 
     return {
       fileName,
+      artistNotes,
       sourceSize: { widthPx: sourceAnalysis.width, heightPx: sourceAnalysis.height },
       wall: { widthFt: parsedLength, heightFt: parsedWidth, areaSqFt: wallArea },
       grid,
@@ -231,6 +235,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     defaultFinishId,
     estimateReady,
     fileName,
+    artistNotes,
     paletteColors,
     parsedCoats,
     parsedGridCellSize,
@@ -488,6 +493,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       wallLength,
       wallWidth,
       gridCellSize,
+      artistNotes,
       coats,
       wastePercent,
       sourceAnalysis,
@@ -512,6 +518,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setWallLength(savedMergePlan.wallLength);
     setWallWidth(savedMergePlan.wallWidth);
     setGridCellSize(savedMergePlan.gridCellSize ?? "2");
+    setArtistNotes(savedMergePlan.artistNotes ?? "");
     setCoats(savedMergePlan.coats);
     setWastePercent(savedMergePlan.wastePercent);
     setSourceAnalysis(savedMergePlan.sourceAnalysis);
@@ -802,14 +809,6 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
               )}
             </div>
 
-            {fieldSheetModel ? (
-              <FieldSheet
-                model={fieldSheetModel}
-                originalImageUrl={previewUrl}
-                reducedImageUrl={flattenedImageUrl}
-              />
-            ) : null}
-
             <div className="palette-grid">
               {paletteColors.map((color) => {
                 const isSelected = selectedColorIds.includes(color.id);
@@ -862,6 +861,15 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 );
               })}
             </div>
+
+            {fieldSheetModel ? (
+              <FieldSheet
+                model={fieldSheetModel}
+                originalImageUrl={previewUrl}
+                reducedImageUrl={flattenedImageUrl}
+                onArtistNotesChange={setArtistNotes}
+              />
+            ) : null}
           </>
         ) : (
           <div className="empty-results">
@@ -878,11 +886,13 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
 function FieldSheet({
   model,
   originalImageUrl,
-  reducedImageUrl
+  reducedImageUrl,
+  onArtistNotesChange
 }: {
   model: FieldSheetModel;
   originalImageUrl: string | null;
   reducedImageUrl: string | null;
+  onArtistNotesChange: (notes: string) => void;
 }) {
   const gridLines = buildGridLinePositions(model.wall, model.grid);
   const sourceAspectRatio = model.sourceSize.widthPx / model.sourceSize.heightPx;
@@ -933,13 +943,7 @@ function FieldSheet({
         </div>
 
         <div className="field-sheet-palette">
-          <div className="field-sheet-mix-space" aria-label="Artist swatch testing and math space">
-            <strong>Artist mix space</strong>
-            <span>Test paint, write ratios, and do your own quantity math here.</span>
-            {Array.from({ length: Math.min(8, Math.max(4, model.colors.length)) }, (_, index) => (
-              <div className="mix-line" key={index} />
-            ))}
-          </div>
+          <div className="field-sheet-mix-space" aria-label="Artist swatch testing and math space" />
           <table className="print-summary-table field-sheet-table">
             <thead>
               <tr>
@@ -983,11 +987,18 @@ function FieldSheet({
         </div>
 
         <aside className="field-sheet-notes" aria-label="Artist notes">
-          <strong>Notes</strong>
-          <span>Store notes, coat notes, substitutions, and on-site adjustments.</span>
-          {Array.from({ length: 5 }, (_, index) => (
-            <div className="notes-line" key={index} />
-          ))}
+          <label className="field-sheet-notes-label" htmlFor="artist-notes">
+            Notes
+          </label>
+          <textarea
+            id="artist-notes"
+            value={model.artistNotes}
+            onChange={(event) => onArtistNotesChange(event.target.value)}
+            placeholder="Store notes, coat notes, substitutions, and on-site adjustments."
+          />
+          <div className="field-sheet-print-notes">
+            {model.artistNotes || "Store notes, coat notes, substitutions, and on-site adjustments."}
+          </div>
         </aside>
       </div>
 

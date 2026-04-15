@@ -119,18 +119,27 @@
   border-radius: 8px;
   padding: 0.9rem;
 }
-.field-sheet-notes strong,
-.field-sheet-notes span {
+.field-sheet-notes-label {
   display: block;
+  font-weight: 700;
+  margin-bottom: 0.45rem;
 }
-.field-sheet-notes span {
-  color: rgba(17, 17, 17, 0.6);
-  font-size: 0.8rem;
-  margin-top: 0.25rem;
+.field-sheet-notes textarea {
+  display: block;
+  width: 100%;
+  min-height: 7rem;
+  resize: vertical;
+  border: 1px solid rgba(17, 17, 17, 0.18);
+  border-radius: 8px;
+  padding: 0.75rem;
+  font: inherit;
+  color: #111111;
+  background: #ffffff;
 }
-.notes-line {
-  height: 1.9rem;
-  border-bottom: 1px solid rgba(17, 17, 17, 0.18);
+.field-sheet-print-notes {
+  display: none;
+  white-space: pre-wrap;
+  color: rgba(17, 17, 17, 0.78);
 }
 .field-sheet-visuals {
   grid-area: visuals;
@@ -212,27 +221,20 @@
 .field-sheet-palette {
   grid-area: palette;
   display: grid;
-  grid-template-columns: minmax(12rem, 0.7fr) minmax(18rem, 1.3fr);
-  gap: 0.75rem;
+  grid-template-columns: minmax(0, 2fr) minmax(18rem, 1fr);
+  gap: 0;
   align-items: stretch;
 }
 .field-sheet-mix-space {
-  border: 1px solid rgba(17, 17, 17, 0.16);
-  border-radius: 8px;
-  padding: 0.9rem;
-}
-.field-sheet-mix-space strong,
-.field-sheet-mix-space span {
-  display: block;
-}
-.field-sheet-mix-space span {
-  color: rgba(17, 17, 17, 0.6);
-  font-size: 0.8rem;
-  margin-top: 0.25rem;
-}
-.mix-line {
-  height: 2.2rem;
-  border-bottom: 1px solid rgba(17, 17, 17, 0.18);
+  min-height: 100%;
+  border-top: 1px solid rgba(17, 17, 17, 0.08);
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 5.1rem,
+    rgba(17, 17, 17, 0.08) 5.1rem,
+    rgba(17, 17, 17, 0.08) 5.16rem
+  );
 }
 .field-sheet-table th,
 .field-sheet-table td {
@@ -378,7 +380,7 @@
     font-size: 0.65rem;
   }
   .field-sheet-grid {
-    grid-template-columns: minmax(0, 0.62fr) minmax(0, 1.38fr);
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
     grid-template-areas:
       "visuals visuals"
       "mix palette"
@@ -395,29 +397,30 @@
   }
   .field-sheet-mix-space {
     grid-area: mix;
-    padding: 0.08in;
-  }
-  .field-sheet-mix-space strong {
-    font-size: 0.68rem;
-  }
-  .field-sheet-mix-space span {
-    font-size: 0.55rem;
-  }
-  .mix-line {
-    height: 0.32in;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 0.67in,
+      rgba(17, 17, 17, 0.12) 0.67in,
+      rgba(17, 17, 17, 0.12) 0.68in
+    );
   }
   .field-sheet-notes {
     grid-area: notes;
     padding: 0.08in;
   }
-  .field-sheet-notes strong {
+  .field-sheet-notes-label {
     font-size: 0.72rem;
   }
-  .field-sheet-notes span {
-    font-size: 0.58rem;
+  .field-sheet-notes textarea {
+    display: none;
   }
-  .notes-line {
-    height: 0.2in;
+  .field-sheet-print-notes {
+    display: block;
+    min-height: 0.62in;
+    border-top: 1px solid rgba(17, 17, 17, 0.12);
+    padding-top: 0.04in;
+    font-size: 0.58rem;
   }
   .grid-preview-frame {
     max-height: 2.05in;
