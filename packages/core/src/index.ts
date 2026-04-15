@@ -635,13 +635,30 @@ function dedupNearestNeighbors(
     }
 
     absorbs.set(absorbed.id, finalKeeperId);
-    // Also redirect any prior absorbers that pointed at `absorbed`.
+    // Redirect any prior absorbers that pointed at `absorbed`. Collect
+    // updates first so we don't mutate the Map during its own iteration.
+    const redirectIds: string[] = [];
     for (const [id, target] of absorbs.entries()) {
-      if (target === absorbed.id) absorbs.set(id, finalKeeperId);
+      if (target === absorbed.id) redirectIds.push(id);
+    }
+    for (const id of redirectIds) {
+      absorbs.set(id, finalKeeperId);
     }
 
     keeper.pixelCount += absorbed.pixelCount;
     survivors.splice(absorbedIndex, 1);
+  }
+
+  // Final safety pass: resolve any remaining transitive chains so every
+  // absorbedId points directly at a survivor (not at another absorbed id).
+  for (const id of Array.from(absorbs.keys())) {
+    let target = absorbs.get(id)!;
+    const visited = new Set<string>([id]);
+    while (absorbs.has(target) && !visited.has(target)) {
+      visited.add(target);
+      target = absorbs.get(target)!;
+    }
+    absorbs.set(id, target);
   }
 
   return { survivors, absorbs };
