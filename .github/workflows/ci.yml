@@ -80,6 +80,11 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Build workspace dependencies
+        run: |
+          npm run build --workspace @muralist/config
+          npm run build --workspace @muralist/core
+
       - name: Build web export for Pages
         env:
           GITHUB_PAGES: "true"
@@ -100,7 +105,10 @@ jobs:
             git worktree add -b gh-pages /tmp/gh-pages
           fi
           mkdir -p /tmp/gh-pages/previews
-          rsync -a --delete --exclude .git --exclude previews apps/web/out/ /tmp/gh-pages/
+          # --checksum: content-compare, not size+mtime. Webpack chunk filenames
+          # are constant-length so index.html can differ only in hash characters,
+          # leaving size identical and rsync silently skipping an updated file.
+          rsync -a --delete --checksum --exclude .git --exclude previews apps/web/out/ /tmp/gh-pages/
           touch /tmp/gh-pages/.nojekyll
           cd /tmp/gh-pages
           git add .
