@@ -890,21 +890,7 @@ function FieldSheet({
 
   return (
     <section className="print-summary field-sheet" aria-labelledby="field-sheet-heading">
-      <header className="print-summary-head field-sheet-head">
-        <div>
-          <p className="eyebrow">Maquette / PDF Field Sheet</p>
-          <h3 id="field-sheet-heading">Scaled Paint Plan</h3>
-          <p>
-            {model.brandLabel} ({model.retailer}) · {model.wall.areaSqFt.toFixed(0)} sq ft ·{" "}
-            {model.colors.length} colors · {model.grid.cellSizeFt} ft grid
-          </p>
-        </div>
-        <div className="print-summary-total">
-          <span className="metric-label">Estimated total</span>
-          <strong>{formatCurrency(model.totals.estimatedCost, model.currency)}</strong>
-          <small>{model.totals.packageLabel}</small>
-        </div>
-      </header>
+      <h3 id="field-sheet-heading" className="field-sheet-title">Scaled Paint Plan</h3>
 
       {model.aspectRatio.shouldWarn ? (
         <div className="ratio-warning" role="status">
@@ -913,14 +899,6 @@ function FieldSheet({
       ) : null}
 
       <div className="field-sheet-grid">
-        <aside className="field-sheet-notes" aria-label="Artist notes">
-          <strong>Artist mixing notes</strong>
-          <span>Mix ratios, substitutions, store notes, and final paint choices.</span>
-          {Array.from({ length: 8 }, (_, index) => (
-            <div className="notes-line" key={index} />
-          ))}
-        </aside>
-
         <div className="field-sheet-visuals">
           <GridPreview
             aspectRatio={sourceAspectRatio}
@@ -954,7 +932,14 @@ function FieldSheet({
           </dl>
         </div>
 
-        <div className="field-sheet-data">
+        <div className="field-sheet-palette">
+          <div className="field-sheet-mix-space" aria-label="Artist swatch testing and math space">
+            <strong>Artist mix space</strong>
+            <span>Test paint, write ratios, and do your own quantity math here.</span>
+            {Array.from({ length: Math.min(8, Math.max(4, model.colors.length)) }, (_, index) => (
+              <div className="mix-line" key={index} />
+            ))}
+          </div>
           <table className="print-summary-table field-sheet-table">
             <thead>
               <tr>
@@ -996,10 +981,20 @@ function FieldSheet({
             </tfoot>
           </table>
         </div>
+
+        <aside className="field-sheet-notes" aria-label="Artist notes">
+          <strong>Notes</strong>
+          <span>Store notes, coat notes, substitutions, and on-site adjustments.</span>
+          {Array.from({ length: 5 }, (_, index) => (
+            <div className="notes-line" key={index} />
+          ))}
+        </aside>
       </div>
 
-      <footer className="print-summary-footnote">
-        Muralist estimates area and quantity. Paint over swatches with your final mixes before matching in store. Prices are planning snapshots.
+      <footer className="print-summary-footnote field-sheet-footer">
+        <strong>Total: {model.totals.packageLabel}</strong>
+        <span>{formatOunces(model.totals.requiredGallons)} · {formatCurrency(model.totals.estimatedCost, model.currency)}</span>
+        <span>{model.brandLabel} ({model.retailer}) · {model.wall.areaSqFt.toFixed(0)} sq ft · {model.colors.length} colors · {model.grid.cellSizeFt} ft grid. Paint over swatches with your final mixes before matching in store.</span>
       </footer>
     </section>
   );

@@ -90,8 +90,9 @@
 .field-sheet {
   overflow: hidden;
 }
-.field-sheet-head .eyebrow {
-  color: rgba(17, 17, 17, 0.58);
+.field-sheet-title {
+  margin: 0 0 0.75rem;
+  font-size: 1.2rem;
 }
 .ratio-warning {
   border: 1px solid rgba(201, 93, 28, 0.45);
@@ -104,12 +105,16 @@
 }
 .field-sheet-grid {
   display: grid;
-  grid-template-columns: minmax(9rem, 0.8fr) minmax(18rem, 1.6fr) minmax(16rem, 1.1fr);
+  grid-template-columns: minmax(12rem, 0.8fr) minmax(18rem, 1.2fr);
+  grid-template-areas:
+    "visuals visuals"
+    "palette palette"
+    "notes notes";
   gap: 1rem;
   align-items: start;
 }
 .field-sheet-notes {
-  min-height: 100%;
+  grid-area: notes;
   border: 1px solid rgba(17, 17, 17, 0.16);
   border-radius: 8px;
   padding: 0.9rem;
@@ -128,8 +133,10 @@
   border-bottom: 1px solid rgba(17, 17, 17, 0.18);
 }
 .field-sheet-visuals {
+  grid-area: visuals;
   display: grid;
   gap: 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 .grid-preview {
   margin: 0;
@@ -202,9 +209,30 @@
   margin: 0.15rem 0 0;
   font-size: 0.86rem;
 }
-.field-sheet-data {
-  max-height: 40rem;
-  overflow: auto;
+.field-sheet-palette {
+  grid-area: palette;
+  display: grid;
+  grid-template-columns: minmax(12rem, 0.7fr) minmax(18rem, 1.3fr);
+  gap: 0.75rem;
+  align-items: stretch;
+}
+.field-sheet-mix-space {
+  border: 1px solid rgba(17, 17, 17, 0.16);
+  border-radius: 8px;
+  padding: 0.9rem;
+}
+.field-sheet-mix-space strong,
+.field-sheet-mix-space span {
+  display: block;
+}
+.field-sheet-mix-space span {
+  color: rgba(17, 17, 17, 0.6);
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+}
+.mix-line {
+  height: 2.2rem;
+  border-bottom: 1px solid rgba(17, 17, 17, 0.18);
 }
 .field-sheet-table th,
 .field-sheet-table td {
@@ -288,9 +316,17 @@
   vertical-align: middle;
 }
 .print-summary-footnote {
+  display: grid;
+  gap: 0.2rem;
   margin-top: 0.75rem;
   font-size: 0.75rem;
   color: rgba(17, 17, 17, 0.55);
+}
+.print-summary-footnote strong {
+  color: rgba(17, 17, 17, 0.85);
+}
+.print-summary-footnote span {
+  display: block;
 }
 
 /* Store-ready print / Save-as-PDF output. Everything outside .print-summary
@@ -333,21 +369,8 @@
     padding: 0 !important;
     margin: 0 !important;
   }
-  .print-summary-head {
-    gap: 0.08in;
-    margin-bottom: 0.08in;
-    padding-bottom: 0.06in;
-  }
-  .print-summary-head h3 {
-    font-size: 1rem;
-    margin-bottom: 0.02in;
-  }
-  .print-summary-head p,
-  .print-summary-total small {
-    font-size: 0.62rem;
-  }
-  .print-summary-total strong {
-    font-size: 0.95rem;
+  .field-sheet-title {
+    display: none;
   }
   .ratio-warning {
     padding: 0.06in 0.08in;
@@ -355,10 +378,11 @@
     font-size: 0.65rem;
   }
   .field-sheet-grid {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+    grid-template-columns: minmax(0, 0.62fr) minmax(0, 1.38fr);
     grid-template-areas:
-      "visuals data"
-      "notes data";
+      "visuals visuals"
+      "mix palette"
+      "notes notes";
     gap: 0.12in;
   }
   .field-sheet-visuals {
@@ -366,9 +390,24 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.08in;
   }
+  .field-sheet-palette {
+    display: contents;
+  }
+  .field-sheet-mix-space {
+    grid-area: mix;
+    padding: 0.08in;
+  }
+  .field-sheet-mix-space strong {
+    font-size: 0.68rem;
+  }
+  .field-sheet-mix-space span {
+    font-size: 0.55rem;
+  }
+  .mix-line {
+    height: 0.32in;
+  }
   .field-sheet-notes {
     grid-area: notes;
-    min-height: 1.55in;
     padding: 0.08in;
   }
   .field-sheet-notes strong {
@@ -378,10 +417,10 @@
     font-size: 0.58rem;
   }
   .notes-line {
-    height: 0.22in;
+    height: 0.2in;
   }
   .grid-preview-frame {
-    max-height: 1.62in;
+    max-height: 2.05in;
   }
   .grid-preview figcaption {
     font-size: 0.56rem;
@@ -403,12 +442,8 @@
   .field-sheet-scale dd {
     font-size: 0.58rem;
   }
-  .field-sheet-data {
-    grid-area: data;
-    max-height: none;
-    overflow: visible;
-  }
   .field-sheet-table {
+    grid-area: palette;
     font-size: 0.58rem;
   }
   .field-sheet-table th,
