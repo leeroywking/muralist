@@ -7,10 +7,16 @@ import type {
   ColorContainerPlan,
   ContainerPlan,
   ContainerPlanEntry,
-  GridSpec
+  GridSpec,
+  MixRecipe,
+  PaletteClassification,
+  WorkspaceContent
 } from "@muralist/core";
 import {
+  applyClassification,
+  applyMixesToCoverage,
   buildMaquetteFileName,
+  classifyPaletteColors,
   compareAspectRatios,
   deriveColorAreaEstimates,
   deriveGridSpec,
@@ -44,6 +50,11 @@ export type FieldSheetColor = {
   estimatedCost: number;
 };
 
+export type FieldSheetColorWithClassification = FieldSheetColor & {
+  classification: PaletteClassification;
+  recipe?: MixRecipe;
+};
+
 export type FieldSheetModel = {
   fileName: string;
   artistNotes: string;
@@ -54,7 +65,8 @@ export type FieldSheetModel = {
   brandLabel: string;
   retailer: string;
   currency: string;
-  colors: FieldSheetColor[];
+  colors: FieldSheetColorWithClassification[];
+  workspace: WorkspaceContent;
   totals: {
     packageLabel: string;
     requiredGallons: number;
@@ -77,12 +89,37 @@ type SavedMergePlan = {
   defaultFinishId?: string;
   colorFinishOverrides?: Record<string, string>;
   colorCoatsOverrides?: Record<string, number>;
+  classifications?: Record<string, PaletteClassification>;
+  mixRecipes?: MixRecipe[];
+};
+
+type AutoCombineSensitivity = "conservative" | "balanced" | "aggressive" | "custom";
+
+type ProSettings = {
+  autoCombineSensitivity: AutoCombineSensitivity;
+  residualThreshold: number;
+  mixCoveragePercent: number;
+  rememberOnDevice: boolean;
+};
+
+const SENSITIVITY_PRESETS: Record<Exclude<AutoCombineSensitivity, "custom">, number> = {
+  conservative: 10,
+  balanced: 18,
+  aggressive: 28
+};
+
+const DEFAULT_PRO_SETTINGS: ProSettings = {
+  autoCombineSensitivity: "balanced",
+  residualThreshold: SENSITIVITY_PRESETS.balanced,
+  mixCoveragePercent: 5,
+  rememberOnDevice: true
 };
 
 const maxDimension = 320;
 const maxSamplePixels = 22000;
 const paletteLimit = 50;
 const savedMergePlanKey = "muralist.saved-merge-plan";
+const proSettingsKey = "muralist.pro-settings";
 
 type PrototypeAppProps = {
   catalog: PaintBrandCatalog;
@@ -120,6 +157,10 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   const [isPending, startTransition] = useTransition();
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
+  const [classifications, setClassifications] = useState<Record<string, PaletteClassification>>({});
+  const [mixRecipes, setMixRecipes] = useState<MixRecipe[]>([]);
+  const [showProSettings, setShowProSettings] = useState(false);
+  const [proSettings, setProSettings] = useState<ProSettings>(DEFAULT_PRO_SETTINGS);
 
   const selectedBrand =
     catalog.brands.find((brand) => brand.id === selectedBrandId) ?? defaultBrand;
@@ -143,6 +184,22 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     Number.isFinite(parsedWaste) &&
     parsedWaste >= 0;
 
+  const adjustedCoverage = useMemo(() => {
+    const raw = paletteColors.map((color) => ({
+      id: color.id,
+      coveragePercent: color.coveragePercent
+    }));
+    if (mixRecipes.length === 0) return raw;
+    try {
+      return applyMixesToCoverage(raw, mixRecipes);
+    } catch {
+      // Mix recipes reference ids that are no longer in the palette (e.g. a
+      // manual merge ran after auto-combine). Fall back to raw coverage —
+      // the next auto-combine pass will re-derive.
+      return raw;
+    }
+  }, [paletteColors, mixRecipes]);
+
   const containerPlan: ContainerPlan | null = useMemo(() => {
     if (!estimateReady) {
       return null;
@@ -154,7 +211,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
         coats: parsedCoats,
         wasteFactor: parsedWaste,
         defaultFinishId,
-        colors: paletteColors.map((color) => ({
+        colors: adjustedCoverage.map((color) => ({
           id: color.id,
           coveragePercent: color.coveragePercent,
           finishId: colorFinishOverrides[color.id],
@@ -172,7 +229,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     defaultFinishId,
     colorFinishOverrides,
     colorCoatsOverrides,
-    paletteColors,
+    adjustedCoverage,
     estimateReady
   ]);
 
@@ -202,6 +259,8 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       0
     );
 
+    const recipeByTargetId = new Map(mixRecipes.map((recipe) => [recipe.targetColorId, recipe]));
+
     return {
       fileName,
       artistNotes,
@@ -215,6 +274,8 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       colors: paletteColors.map((color) => {
         const plan = containerPlan.perColor.find((entry) => entry.colorId === color.id);
         const finish = selectedBrand.finishes.find((entry) => entry.id === plan?.finishId);
+        const classification: PaletteClassification = classifications[color.id] ?? "buy";
+        const recipe = recipeByTargetId.get(color.id);
         return {
           colorId: color.id,
           hex: color.hex,
@@ -222,11 +283,17 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
           areaSqFt: areaByColorId.get(color.id) ?? 0,
           finishLabel: finish?.display_name ?? plan?.finishId ?? defaultFinishId,
           coats: plan?.coats ?? parsedCoats,
-          packageLabel: plan ? plan.packages.map(formatContainerEntry).join(" + ") : "--",
+          packageLabel: plan ? plan.packages.map(formatContainerEntry).join(" + ") : "mix",
           requiredGallons: plan?.requiredGallons ?? 0,
-          estimatedCost: plan?.estimatedCost ?? 0
+          estimatedCost: plan?.estimatedCost ?? 0,
+          classification,
+          recipe
         };
       }),
+      workspace:
+        mixRecipes.length > 0
+          ? { kind: "mixes", mixes: mixRecipes }
+          : { kind: "blank" },
       totals: {
         packageLabel: formatContainerTotals(containerPlan.totals),
         requiredGallons: totalRequiredGallons,
@@ -240,6 +307,8 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     fileName,
     artistNotes,
     paletteColors,
+    classifications,
+    mixRecipes,
     parsedCoats,
     parsedGridCellSize,
     parsedLength,
@@ -311,6 +380,29 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       window.localStorage.removeItem(savedMergePlanKey);
     }
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const saved = window.localStorage.getItem(proSettingsKey);
+    if (!saved) return;
+    try {
+      const parsed = JSON.parse(saved) as Partial<ProSettings>;
+      setProSettings({ ...DEFAULT_PRO_SETTINGS, ...parsed });
+    } catch {
+      window.localStorage.removeItem(proSettingsKey);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (proSettings.rememberOnDevice) {
+      window.localStorage.setItem(proSettingsKey, JSON.stringify(proSettings));
+    } else {
+      window.localStorage.removeItem(proSettingsKey);
+    }
+  }, [proSettings]);
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -505,6 +597,75 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setSelectedColorIds([]);
     setMergeKeeperId("");
     setSaveMessage("");
+    // Manual merge invalidates any prior auto-combine classifications — the
+    // recipes and absorb marks were based on the old palette composition.
+    setClassifications({});
+    setMixRecipes([]);
+  }
+
+  function handleAutoCombine() {
+    if (paletteColors.length < 3) {
+      setSaveMessage("Need at least three captured colors before auto-combine can help.");
+      return;
+    }
+
+    const classifierInput = paletteColors.map((color) => ({
+      id: color.id,
+      rgb: color.rgb,
+      pixelCount: color.pixelCount
+    }));
+
+    const classifiedList = classifyPaletteColors(classifierInput, {
+      residualThreshold: proSettings.residualThreshold,
+      mixCoveragePercent: proSettings.mixCoveragePercent
+    });
+    const { nextColors, mixes, absorbedCount } = applyClassification(classifierInput, classifiedList);
+
+    if (absorbedCount === 0 && mixes.length === 0) {
+      setSaveMessage("Nothing to auto-combine — no gradient or mix members detected.");
+      return;
+    }
+
+    const pixelCountById = new Map(nextColors.map((entry) => [entry.id, entry.pixelCount]));
+    const nextPalette: PaletteColor[] = paletteColors
+      .filter((color) => pixelCountById.has(color.id))
+      .map((color) => ({ ...color, pixelCount: pixelCountById.get(color.id)! }))
+      .sort((left, right) => right.pixelCount - left.pixelCount);
+
+    const rebalanced = rebalanceCoverage(nextPalette);
+    const retainedIds = new Set(rebalanced.map((color) => color.id));
+
+    setColorFinishOverrides((current) => {
+      const next: Record<string, string> = {};
+      for (const [colorId, finishId] of Object.entries(current)) {
+        if (retainedIds.has(colorId)) next[colorId] = finishId;
+      }
+      return next;
+    });
+    setColorCoatsOverrides((current) => {
+      const next: Record<string, number> = {};
+      for (const [colorId, coatsValue] of Object.entries(current)) {
+        if (retainedIds.has(colorId)) next[colorId] = coatsValue;
+      }
+      return next;
+    });
+    setSelectedColorIds([]);
+    setMergeKeeperId("");
+
+    const nextClassifications: Record<string, PaletteClassification> = {};
+    for (const entry of classifiedList) {
+      if (!retainedIds.has(entry.id)) continue;
+      nextClassifications[entry.id] = entry.classification;
+    }
+
+    setPaletteColors(rebalanced);
+    setClassifications(nextClassifications);
+    setMixRecipes(mixes);
+
+    const buyCount = Object.values(nextClassifications).filter((entry) => entry === "buy").length;
+    setSaveMessage(
+      `Kept ${buyCount} to buy, flagged ${mixes.length} to mix, absorbed ${absorbedCount} gradient ${absorbedCount === 1 ? "color" : "colors"}.`
+    );
   }
 
   function saveMergedChoices() {
@@ -526,7 +687,9 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       paletteColors,
       defaultFinishId,
       colorFinishOverrides,
-      colorCoatsOverrides
+      colorCoatsOverrides,
+      classifications,
+      mixRecipes
     };
 
     window.localStorage.setItem(savedMergePlanKey, JSON.stringify(nextSavedPlan));
@@ -554,6 +717,8 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setDefaultFinishId(restoredDefaultFinish);
     setColorFinishOverrides(savedMergePlan.colorFinishOverrides ?? {});
     setColorCoatsOverrides(savedMergePlan.colorCoatsOverrides ?? {});
+    setClassifications(savedMergePlan.classifications ?? {});
+    setMixRecipes(savedMergePlan.mixRecipes ?? []);
     setSelectedColorIds([]);
     setMergeKeeperId("");
     setSaveMessage("Saved merged choices restored.");
@@ -590,6 +755,13 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
           </div>
         </div>
       </section>
+
+      <ProSettingsPanel
+        open={showProSettings}
+        onToggle={() => setShowProSettings((current) => !current)}
+        settings={proSettings}
+        onSettingsChange={setProSettings}
+      />
 
       <section className="workspace-grid">
         <section className="panel">
@@ -789,6 +961,15 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                   Merge Selected
                 </button>
                 <button
+                  className="save-button auto-combine-button"
+                  disabled={paletteColors.length < 3}
+                  onClick={handleAutoCombine}
+                  type="button"
+                  title="Classify the palette into colors to buy, colors to mix, and gradient members to absorb into their nearest neighbors."
+                >
+                  Auto-combine similar colors
+                </button>
+                <button
                   className="save-button"
                   disabled={paletteColors.length === 0}
                   onClick={saveMergedChoices}
@@ -850,9 +1031,15 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 const isSelected = selectedColorIds.includes(color.id);
                 const colorPlan = planByColorId.get(color.id) ?? null;
                 const effectiveFinishId = colorFinishOverrides[color.id] ?? defaultFinishId;
+                const classification = classifications[color.id] ?? "buy";
+                const isMix = classification === "mix";
+                const recipe = isMix ? mixRecipes.find((entry) => entry.targetColorId === color.id) : undefined;
 
                 return (
-                  <article className={`swatch-card ${isSelected ? "swatch-card-selected" : ""}`} key={color.id}>
+                  <article
+                    className={`swatch-card ${isSelected ? "swatch-card-selected" : ""} ${isMix ? "swatch-card-mix" : ""}`}
+                    key={color.id}
+                  >
                     <button
                       className="swatch-toggle"
                       onClick={() => toggleColorSelection(color.id)}
@@ -865,7 +1052,14 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                         <strong>{color.hex}</strong>
                         <span>{color.coveragePercent.toFixed(1)}%</span>
                       </div>
-                      <p>{color.pixelCount.toLocaleString()} sampled pixels in this working color.</p>
+                      {isMix ? (
+                        <p className="mix-recipe-line">
+                          <span className="mix-badge">mix</span>{" "}
+                          {recipe ? describeMixRecipe(recipe, paletteColors) : "combine two buy colors"}
+                        </p>
+                      ) : (
+                        <p>{color.pixelCount.toLocaleString()} sampled pixels in this working color.</p>
+                      )}
                       <label className="field field-inline swatch-finish">
                         <span>Finish</span>
                         <select
@@ -1390,4 +1584,144 @@ function formatSavedAt(savedAt: string) {
 
 function roundToTenths(value: number) {
   return Math.round(value * 10) / 10;
+}
+
+function describeMixRecipe(recipe: MixRecipe, palette: PaletteColor[]): string {
+  const hexById = new Map(palette.map((color) => [color.id, color.hex]));
+  return recipe.components
+    .map((component) => {
+      const hex = hexById.get(component.colorId) ?? component.colorId;
+      const percent = Math.round(component.fraction * 100);
+      return `${percent}% ${hex}`;
+    })
+    .join(" + ");
+}
+
+function ProSettingsPanel({
+  open,
+  onToggle,
+  settings,
+  onSettingsChange
+}: {
+  open: boolean;
+  onToggle: () => void;
+  settings: ProSettings;
+  onSettingsChange: (next: ProSettings) => void;
+}) {
+  function setSensitivity(next: AutoCombineSensitivity) {
+    if (next === "custom") {
+      onSettingsChange({ ...settings, autoCombineSensitivity: "custom" });
+      return;
+    }
+    onSettingsChange({
+      ...settings,
+      autoCombineSensitivity: next,
+      residualThreshold: SENSITIVITY_PRESETS[next]
+    });
+  }
+
+  function setMixCoverage(nextRaw: string) {
+    const parsed = Number(nextRaw);
+    if (!Number.isFinite(parsed) || parsed < 0) return;
+    onSettingsChange({ ...settings, mixCoveragePercent: parsed });
+  }
+
+  function setResidual(nextRaw: string) {
+    const parsed = Number(nextRaw);
+    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    onSettingsChange({
+      ...settings,
+      autoCombineSensitivity: "custom",
+      residualThreshold: parsed
+    });
+  }
+
+  function toggleRemember() {
+    onSettingsChange({ ...settings, rememberOnDevice: !settings.rememberOnDevice });
+  }
+
+  return (
+    <section className="pro-settings-panel" aria-labelledby="pro-settings-heading">
+      <header className="pro-settings-header">
+        <div>
+          <h2 id="pro-settings-heading">Pro settings</h2>
+          <p>
+            Advanced dials for people who already know how they want the auto-combine and mix math to behave.
+          </p>
+        </div>
+        <button
+          className="pro-settings-toggle"
+          onClick={onToggle}
+          type="button"
+          aria-expanded={open}
+        >
+          {open ? "Hide" : "Show"}
+        </button>
+      </header>
+
+      {open ? (
+        <div className="pro-settings-body">
+          <div className="pro-settings-row">
+            <div className="pro-settings-row-label">
+              <strong>Auto-combine sensitivity</strong>
+              <span>
+                Higher sensitivity collapses more near-duplicate colors into mixing lines. Lower keeps more distinct buy colors.
+              </span>
+            </div>
+            <div className="sensitivity-preset-group" role="group" aria-label="Auto-combine sensitivity">
+              {(["conservative", "balanced", "aggressive", "custom"] as AutoCombineSensitivity[]).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={`sensitivity-preset ${settings.autoCombineSensitivity === option ? "is-active" : ""}`}
+                  onClick={() => setSensitivity(option)}
+                >
+                  {option[0]!.toUpperCase() + option.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {settings.autoCombineSensitivity === "custom" ? (
+            <label className="field pro-settings-custom">
+              <span>Residual threshold (0-100, RGB units)</span>
+              <input
+                type="number"
+                min="1"
+                max="100"
+                step="1"
+                value={settings.residualThreshold}
+                onChange={(event) => setResidual(event.target.value)}
+              />
+            </label>
+          ) : null}
+
+          <div className="pro-settings-row">
+            <div className="pro-settings-row-label">
+              <strong>Mix coverage threshold</strong>
+              <span>
+                Colors above this percent of the image stay in the palette as a mix recipe. Below, they dissolve into their nearest neighbor.
+              </span>
+            </div>
+            <label className="field pro-settings-number">
+              <span>%</span>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.1"
+                value={settings.mixCoveragePercent}
+                onChange={(event) => setMixCoverage(event.target.value)}
+              />
+            </label>
+          </div>
+
+          <label className="pro-settings-remember">
+            <input type="checkbox" checked={settings.rememberOnDevice} onChange={toggleRemember} />
+            <span>Remember these settings on this device</span>
+          </label>
+        </div>
+      ) : null}
+    </section>
+  );
 }

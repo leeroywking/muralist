@@ -103,6 +103,45 @@ export type ColorAreaInput = {
   coveragePercent: number;
 };
 
+export type PaletteClassification = "buy" | "mix" | "absorb";
+
+export type MixComponent = {
+  colorId: string;
+  fraction: number;
+};
+
+export type MixRecipe = {
+  targetColorId: string;
+  components: MixComponent[];
+};
+
+export type ClassifyPaletteInput = {
+  id: string;
+  rgb: [number, number, number];
+  pixelCount: number;
+};
+
+export type ClassifyPaletteOptions = {
+  /** Maximum per-channel residual (in 0-255 RGB units) for a color to count as
+   * lying on a mixing line. Default 18. Lower = stricter, keeps more buy
+   * colors; higher = more aggressive, collapses more onto mixing lines. */
+  residualThreshold: number;
+  /** Coverage percent threshold that splits mix (kept with recipe, >= threshold)
+   * from absorb (silently folded into nearest endpoint, < threshold). */
+  mixCoveragePercent: number;
+};
+
+export type ClassifiedColor = {
+  id: string;
+  classification: PaletteClassification;
+  absorbedIntoId?: string;
+  recipe?: MixRecipe;
+};
+
+export type WorkspaceContent =
+  | { kind: "blank" }
+  | { kind: "mixes"; mixes: MixRecipe[] };
+
 export type ColorAreaEstimate = {
   id: string;
   coveragePercent: number;
@@ -400,4 +439,260 @@ function remainderOrFull(value: number, divisor: number) {
 
 function nearlyEqual(left: number, right: number) {
   return Math.abs(left - right) < 1e-9;
+}
+
+export function classifyPaletteColors(
+  colors: ClassifyPaletteInput[],
+  options: ClassifyPaletteOptions
+): ClassifiedColor[] {
+  assertPositiveFinite("Residual threshold", options.residualThreshold);
+  if (!Number.isFinite(options.mixCoveragePercent) || options.mixCoveragePercent < 0) {
+    throw new Error("Mix coverage percent must be zero or greater.");
+  }
+
+  const totalPixels = colors.reduce((sum, color) => sum + color.pixelCount, 0);
+  if (totalPixels <= 0 || colors.length === 0) {
+    return [];
+  }
+
+  const coverageById = new Map<string, number>();
+  for (const color of colors) {
+    coverageById.set(color.id, (color.pixelCount / totalPixels) * 100);
+  }
+
+  // Phase 1: identify extreme (buy) colors. A color is extreme if no pair of
+  // *other* palette colors can express it as a segment interpolation within
+  // the residual threshold. In a gradient, the two endpoints are extreme and
+  // every middle step is interior. Coverage order does not drive this — the
+  // geometry of the palette does.
+  const extremeIds = new Set<string>();
+  for (const candidate of colors) {
+    const others = colors.filter((color) => color.id !== candidate.id);
+    const fit = findBestMixingPair(candidate, others, options.residualThreshold);
+    if (!fit) {
+      extremeIds.add(candidate.id);
+    }
+  }
+
+  // Degenerate fallback: if every color sits on some mixing line (possible
+  // for a palette of exactly 2 duplicated colors or all-collinear points),
+  // promote the highest-coverage color so we always have at least one buy.
+  if (extremeIds.size === 0) {
+    let topId: string | null = null;
+    let topPixels = -Infinity;
+    for (const color of colors) {
+      if (color.pixelCount > topPixels) {
+        topPixels = color.pixelCount;
+        topId = color.id;
+      }
+    }
+    if (topId) extremeIds.add(topId);
+  }
+
+  const extremes = colors.filter((color) => extremeIds.has(color.id));
+  const classifications = new Map<string, ClassifiedColor>();
+
+  // Phase 2: interior colors classify as mix or absorb based on coverage.
+  for (const color of colors) {
+    if (extremeIds.has(color.id)) {
+      classifications.set(color.id, { id: color.id, classification: "buy" });
+      continue;
+    }
+
+    const fit = findBestMixingPair(color, extremes, options.residualThreshold);
+    if (!fit) {
+      // Should be unreachable given Phase 1, but fall back to buy if the
+      // extreme set somehow cannot explain this interior color.
+      classifications.set(color.id, { id: color.id, classification: "buy" });
+      continue;
+    }
+
+    const coverage = coverageById.get(color.id) ?? 0;
+    const { endpointA, endpointB, t } = fit;
+
+    if (coverage >= options.mixCoveragePercent) {
+      classifications.set(color.id, {
+        id: color.id,
+        classification: "mix",
+        recipe: {
+          targetColorId: color.id,
+          components: [
+            { colorId: endpointA.id, fraction: round4(1 - t) },
+            { colorId: endpointB.id, fraction: round4(t) }
+          ]
+        }
+      });
+    } else {
+      classifications.set(color.id, {
+        id: color.id,
+        classification: "absorb",
+        absorbedIntoId: t < 0.5 ? endpointA.id : endpointB.id
+      });
+    }
+  }
+
+  return colors.map((color) => classifications.get(color.id)!);
+}
+
+function findBestMixingPair(
+  candidate: ClassifyPaletteInput,
+  buyColors: ClassifyPaletteInput[],
+  residualThreshold: number
+): { endpointA: ClassifyPaletteInput; endpointB: ClassifyPaletteInput; t: number; residual: number } | null {
+  if (buyColors.length < 2) return null;
+
+  let best: {
+    endpointA: ClassifyPaletteInput;
+    endpointB: ClassifyPaletteInput;
+    t: number;
+    residual: number;
+    combinedPixelCount: number;
+  } | null = null;
+
+  for (let i = 0; i < buyColors.length; i += 1) {
+    for (let j = i + 1; j < buyColors.length; j += 1) {
+      const a = buyColors[i]!;
+      const b = buyColors[j]!;
+      const fit = projectOntoSegment(candidate.rgb, a.rgb, b.rgb);
+      if (fit === null) continue;
+      if (fit.residual > residualThreshold) continue;
+
+      const combinedPixelCount = a.pixelCount + b.pixelCount;
+      if (
+        !best ||
+        fit.residual < best.residual - 1e-6 ||
+        (Math.abs(fit.residual - best.residual) < 1e-6 &&
+          combinedPixelCount > best.combinedPixelCount)
+      ) {
+        best = { endpointA: a, endpointB: b, t: fit.t, residual: fit.residual, combinedPixelCount };
+      }
+    }
+  }
+
+  if (!best) return null;
+  return {
+    endpointA: best.endpointA,
+    endpointB: best.endpointB,
+    t: best.t,
+    residual: best.residual
+  };
+}
+
+function projectOntoSegment(
+  point: [number, number, number],
+  a: [number, number, number],
+  b: [number, number, number]
+): { t: number; residual: number } | null {
+  const ab: [number, number, number] = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const denom = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+  if (denom <= 1e-9) return null;
+
+  const ap: [number, number, number] = [point[0] - a[0], point[1] - a[1], point[2] - a[2]];
+  const t = (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / denom;
+  if (t < 0 || t > 1) return null;
+
+  const projected: [number, number, number] = [
+    a[0] + t * ab[0],
+    a[1] + t * ab[1],
+    a[2] + t * ab[2]
+  ];
+  const dx = point[0] - projected[0];
+  const dy = point[1] - projected[1];
+  const dz = point[2] - projected[2];
+  const residual = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  return { t, residual };
+}
+
+export type ApplyClassificationResult = {
+  nextColors: ClassifyPaletteInput[];
+  mixes: MixRecipe[];
+  absorbedCount: number;
+};
+
+export function applyClassification(
+  colors: ClassifyPaletteInput[],
+  classifications: ClassifiedColor[]
+): ApplyClassificationResult {
+  const classificationById = new Map(classifications.map((entry) => [entry.id, entry]));
+  const pixelCountById = new Map(colors.map((color) => [color.id, color.pixelCount]));
+
+  let absorbedCount = 0;
+  for (const color of colors) {
+    const entry = classificationById.get(color.id);
+    if (!entry || entry.classification !== "absorb" || !entry.absorbedIntoId) continue;
+    const keeperId = entry.absorbedIntoId;
+    const keeperPixels = pixelCountById.get(keeperId);
+    if (keeperPixels === undefined) {
+      throw new Error(`Absorbed color ${color.id} references unknown keeper ${keeperId}.`);
+    }
+    pixelCountById.set(keeperId, keeperPixels + color.pixelCount);
+    pixelCountById.delete(color.id);
+    absorbedCount += 1;
+  }
+
+  const nextColors: ClassifyPaletteInput[] = [];
+  const mixes: MixRecipe[] = [];
+  for (const color of colors) {
+    const entry = classificationById.get(color.id);
+    if (!entry) {
+      nextColors.push(color);
+      continue;
+    }
+    if (entry.classification === "absorb") continue;
+    const updatedPixelCount = pixelCountById.get(color.id);
+    if (updatedPixelCount === undefined) continue;
+    nextColors.push({ ...color, pixelCount: updatedPixelCount });
+    if (entry.classification === "mix" && entry.recipe) {
+      mixes.push(entry.recipe);
+    }
+  }
+
+  return { nextColors, mixes, absorbedCount };
+}
+
+export function applyMixesToCoverage(
+  colors: ColorAreaInput[],
+  mixes: MixRecipe[]
+): ColorAreaInput[] {
+  if (mixes.length === 0) return colors.map((color) => ({ ...color }));
+
+  const coverageById = new Map<string, number>();
+  for (const color of colors) {
+    if (!Number.isFinite(color.coveragePercent) || color.coveragePercent < 0) {
+      throw new Error(`Color ${color.id} coveragePercent must be zero or greater.`);
+    }
+    coverageById.set(color.id, color.coveragePercent);
+  }
+
+  const removed = new Set<string>();
+  for (const mix of mixes) {
+    const targetCoverage = coverageById.get(mix.targetColorId);
+    if (targetCoverage === undefined) {
+      throw new Error(`Mix target ${mix.targetColorId} is not in the coverage list.`);
+    }
+    const fractionSum = mix.components.reduce((sum, component) => sum + component.fraction, 0);
+    if (Math.abs(fractionSum - 1) > 1e-3) {
+      throw new Error(
+        `Mix for ${mix.targetColorId} has components summing to ${fractionSum.toFixed(4)}, expected 1.0.`
+      );
+    }
+    for (const component of mix.components) {
+      const componentCoverage = coverageById.get(component.colorId);
+      if (componentCoverage === undefined) {
+        throw new Error(
+          `Mix component ${component.colorId} for ${mix.targetColorId} is not in the coverage list.`
+        );
+      }
+      coverageById.set(component.colorId, componentCoverage + component.fraction * targetCoverage);
+    }
+    removed.add(mix.targetColorId);
+  }
+
+  return colors
+    .filter((color) => !removed.has(color.id))
+    .map((color) => ({ id: color.id, coveragePercent: coverageById.get(color.id)! }));
+}
+
+function round4(value: number): number {
+  return Math.round(value * 10000) / 10000;
 }
