@@ -63,7 +63,10 @@ jobs:
             git worktree add -b gh-pages /tmp/gh-pages
           fi
           mkdir -p "/tmp/gh-pages/previews/${PREVIEW_SLUG}"
-          rsync -a --delete --exclude .git "apps/web/out/" "/tmp/gh-pages/previews/${PREVIEW_SLUG}/"
+          # --checksum: content-compare, not size+mtime. Webpack chunk filenames
+          # are constant-length, so index.html can differ only in hash characters,
+          # leaving size identical and rsync silently skipping an updated file.
+          rsync -a --delete --checksum --exclude .git "apps/web/out/" "/tmp/gh-pages/previews/${PREVIEW_SLUG}/"
           touch /tmp/gh-pages/.nojekyll
           cd /tmp/gh-pages
           git add .
