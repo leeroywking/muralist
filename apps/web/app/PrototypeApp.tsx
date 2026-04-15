@@ -1,14 +1,13 @@
 "use client";
 
 import { ChangeEvent, useEffect, useMemo, useRef, useState, useTransition } from "react";
-
-type BrandProfile = {
-  id: string;
-  name: string;
-  retailer: string;
-  coverage: number;
-  coats: number;
-};
+import type { PaintBrandCatalog } from "@muralist/config";
+import type {
+  ColorContainerPlan,
+  ContainerPlan,
+  ContainerPlanEntry
+} from "@muralist/core";
+import { suggestContainersForColors } from "@muralist/core";
 
 type PaletteColor = {
   id: string;
@@ -34,60 +33,42 @@ type SavedMergePlan = {
   wastePercent: string;
   sourceAnalysis: AnalysisResult | null;
   paletteColors: PaletteColor[];
+  defaultFinishId?: string;
+  colorFinishOverrides?: Record<string, string>;
+  colorCoatsOverrides?: Record<string, number>;
 };
 
-type CanBreakdown = {
-  gallons: number;
-  label: string;
-  count: number;
-};
-
-const brandProfiles: BrandProfile[] = [
-  {
-    id: "sherwin_williams",
-    name: "Sherwin-Williams",
-    retailer: "Sherwin-Williams",
-    coverage: 375,
-    coats: 2
-  },
-  {
-    id: "valspar",
-    name: "Valspar",
-    retailer: "Lowe's",
-    coverage: 400,
-    coats: 2
-  },
-  {
-    id: "behr",
-    name: "Behr",
-    retailer: "Home Depot",
-    coverage: 325,
-    coats: 2
-  }
-];
-
-const defaultBrand = brandProfiles[0]!;
 const maxDimension = 320;
 const maxSamplePixels = 22000;
 const paletteLimit = 50;
 const savedMergePlanKey = "muralist.saved-merge-plan";
-const canSizes: CanBreakdown[] = [
-  { gallons: 5, label: "5 gal bucket", count: 0 },
-  { gallons: 1, label: "1 gal can", count: 0 },
-  { gallons: 0.25, label: "1 qt can", count: 0 }
-];
 
-export function PrototypeApp() {
+type PrototypeAppProps = {
+  catalog: PaintBrandCatalog;
+};
+
+export function PrototypeApp({ catalog }: PrototypeAppProps) {
+  const defaultBrand = catalog.brands[0]!;
+  const defaultFinishForBrand = (brandId: string) => {
+    const brand = catalog.brands.find((entry) => entry.id === brandId) ?? defaultBrand;
+    return brand.finishes[0]!.id;
+  };
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sourcePixelsRef = useRef<{ data: Uint8ClampedArray; width: number; height: number } | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [flattenedImageUrl, setFlattenedImageUrl] = useState<string | null>(null);
   const [fileName, setFileName] = useState("");
   const [sourceAnalysis, setSourceAnalysis] = useState<AnalysisResult | null>(null);
   const [paletteColors, setPaletteColors] = useState<PaletteColor[]>([]);
   const [selectedBrandId, setSelectedBrandId] = useState(defaultBrand.id);
   const [wallLength, setWallLength] = useState("25");
   const [wallWidth, setWallWidth] = useState("10");
-  const [coats, setCoats] = useState(String(defaultBrand.coats));
+  const [coats, setCoats] = useState(String(defaultBrand.default_coats));
   const [wastePercent, setWastePercent] = useState("10");
+  const [defaultFinishId, setDefaultFinishId] = useState<string>(defaultBrand.finishes[0]!.id);
+  const [colorFinishOverrides, setColorFinishOverrides] = useState<Record<string, string>>({});
+  const [colorCoatsOverrides, setColorCoatsOverrides] = useState<Record<string, number>>({});
   const [selectedColorIds, setSelectedColorIds] = useState<string[]>([]);
   const [mergeKeeperId, setMergeKeeperId] = useState<string>("");
   const [savedMergePlan, setSavedMergePlan] = useState<SavedMergePlan | null>(null);
@@ -95,7 +76,8 @@ export function PrototypeApp() {
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const selectedBrand = brandProfiles.find((brand) => brand.id === selectedBrandId) ?? defaultBrand;
+  const selectedBrand =
+    catalog.brands.find((brand) => brand.id === selectedBrandId) ?? defaultBrand;
   const parsedLength = Number(wallLength);
   const parsedWidth = Number(wallWidth);
   const parsedCoats = Number(coats);
@@ -113,6 +95,79 @@ export function PrototypeApp() {
     Number.isFinite(parsedWaste) &&
     parsedWaste >= 0;
 
+  const containerPlan: ContainerPlan | null = useMemo(() => {
+    if (!estimateReady) {
+      return null;
+    }
+    return suggestContainersForColors(
+      {
+        brandId: selectedBrandId,
+        areaSqFt: wallArea,
+        coats: parsedCoats,
+        wasteFactor: parsedWaste,
+        defaultFinishId,
+        colors: paletteColors.map((color) => ({
+          id: color.id,
+          coveragePercent: color.coveragePercent,
+          finishId: colorFinishOverrides[color.id],
+          coats: colorCoatsOverrides[color.id]
+        }))
+      },
+      catalog
+    );
+  }, [
+    catalog,
+    selectedBrandId,
+    wallArea,
+    parsedCoats,
+    parsedWaste,
+    defaultFinishId,
+    colorFinishOverrides,
+    colorCoatsOverrides,
+    paletteColors,
+    estimateReady
+  ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const source = sourcePixelsRef.current;
+    if (!source || paletteColors.length === 0) {
+      setFlattenedImageUrl(null);
+      return;
+    }
+    let cancelled = false;
+    const compute = () => {
+      const flat = flattenImageToPalette(source, paletteColors);
+      if (!cancelled) {
+        setFlattenedImageUrl(flat);
+      }
+    };
+    const idleId = (window as unknown as { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
+    if (typeof idleId === "function") {
+      const handle = idleId(compute);
+      return () => {
+        cancelled = true;
+        const cancelIdle = (window as unknown as { cancelIdleCallback?: (h: number) => void }).cancelIdleCallback;
+        if (typeof cancelIdle === "function") cancelIdle(handle);
+      };
+    }
+    const timeoutId = window.setTimeout(compute, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [paletteColors]);
+
+  const planByColorId = useMemo(() => {
+    const map = new Map<string, ColorContainerPlan>();
+    if (containerPlan) {
+      for (const entry of containerPlan.perColor) {
+        map.set(entry.colorId, entry);
+      }
+    }
+    return map;
+  }, [containerPlan]);
+
   const mergeOptions = useMemo(() => {
     return paletteColors.filter((color) => selectedColorIds.includes(color.id));
   }, [paletteColors, selectedColorIds]);
@@ -129,7 +184,8 @@ export function PrototypeApp() {
     }
 
     try {
-      setSavedMergePlan(JSON.parse(saved) as SavedMergePlan);
+      const parsed = JSON.parse(saved) as SavedMergePlan;
+      setSavedMergePlan(parsed);
     } catch {
       window.localStorage.removeItem(savedMergePlanKey);
     }
@@ -159,12 +215,22 @@ export function PrototypeApp() {
     setSaveMessage("");
     setSelectedColorIds([]);
     setMergeKeeperId("");
+    setColorFinishOverrides({});
+    setColorCoatsOverrides({});
+    setFlattenedImageUrl(null);
+    sourcePixelsRef.current = null;
 
     startTransition(async () => {
       try {
         const result = await analyzeImage(file, canvasRef.current);
         setSourceAnalysis(result);
         setPaletteColors(result.colors);
+        const canvas = canvasRef.current;
+        const ctx = canvas?.getContext("2d", { willReadFrequently: true });
+        if (canvas && ctx) {
+          const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          sourcePixelsRef.current = { data: new Uint8ClampedArray(img.data), width: canvas.width, height: canvas.height };
+        }
       } catch (analysisError) {
         setSourceAnalysis(null);
         setPaletteColors([]);
@@ -175,10 +241,46 @@ export function PrototypeApp() {
 
   function handleBrandChange(nextBrandId: string) {
     setSelectedBrandId(nextBrandId);
-    const nextBrand = brandProfiles.find((brand) => brand.id === nextBrandId);
+    const nextBrand = catalog.brands.find((brand) => brand.id === nextBrandId);
 
     if (nextBrand) {
-      setCoats(String(nextBrand.coats));
+      setCoats(String(nextBrand.default_coats));
+      // Finish catalogs differ per brand; reset default and drop per-color
+      // overrides so we never keep a finishId that isn't valid for the new brand.
+      setDefaultFinishId(nextBrand.finishes[0]!.id);
+      setColorFinishOverrides({});
+      setColorCoatsOverrides({});
+    }
+  }
+
+  function handleDefaultFinishChange(nextFinishId: string) {
+    setDefaultFinishId(nextFinishId);
+  }
+
+  function handleColorFinishChange(colorId: string, nextFinishId: string) {
+    setColorFinishOverrides((current) => {
+      if (nextFinishId === defaultFinishId) {
+        const { [colorId]: _removed, ...rest } = current;
+        return rest;
+      }
+      return { ...current, [colorId]: nextFinishId };
+    });
+  }
+
+  function handleColorCoatsChange(colorId: string, nextCoatsRaw: string) {
+    const nextCoats = Number(nextCoatsRaw);
+    setColorCoatsOverrides((current) => {
+      if (!Number.isFinite(nextCoats) || nextCoats <= 0 || nextCoats === parsedCoats) {
+        const { [colorId]: _removed, ...rest } = current;
+        return rest;
+      }
+      return { ...current, [colorId]: nextCoats };
+    });
+  }
+
+  function handlePrint() {
+    if (typeof window !== "undefined") {
+      window.print();
     }
   }
 
@@ -230,6 +332,25 @@ export function PrototypeApp() {
       .sort((left, right) => right.pixelCount - left.pixelCount);
 
     setPaletteColors(rebalanceCoverage(nextPalette));
+    const retainedIds = new Set(nextPalette.map((color) => color.id));
+    setColorFinishOverrides((current) => {
+      const next: Record<string, string> = {};
+      for (const [colorId, finishId] of Object.entries(current)) {
+        if (retainedIds.has(colorId)) {
+          next[colorId] = finishId;
+        }
+      }
+      return next;
+    });
+    setColorCoatsOverrides((current) => {
+      const next: Record<string, number> = {};
+      for (const [colorId, coatsValue] of Object.entries(current)) {
+        if (retainedIds.has(colorId)) {
+          next[colorId] = coatsValue;
+        }
+      }
+      return next;
+    });
     setSelectedColorIds([]);
     setMergeKeeperId("");
     setSaveMessage("");
@@ -249,7 +370,10 @@ export function PrototypeApp() {
       coats,
       wastePercent,
       sourceAnalysis,
-      paletteColors
+      paletteColors,
+      defaultFinishId,
+      colorFinishOverrides,
+      colorCoatsOverrides
     };
 
     window.localStorage.setItem(savedMergePlanKey, JSON.stringify(nextSavedPlan));
@@ -270,6 +394,11 @@ export function PrototypeApp() {
     setWastePercent(savedMergePlan.wastePercent);
     setSourceAnalysis(savedMergePlan.sourceAnalysis);
     setPaletteColors(savedMergePlan.paletteColors);
+    const restoredDefaultFinish =
+      savedMergePlan.defaultFinishId ?? defaultFinishForBrand(savedMergePlan.selectedBrandId);
+    setDefaultFinishId(restoredDefaultFinish);
+    setColorFinishOverrides(savedMergePlan.colorFinishOverrides ?? {});
+    setColorCoatsOverrides(savedMergePlan.colorCoatsOverrides ?? {});
     setSelectedColorIds([]);
     setMergeKeeperId("");
     setSaveMessage("Saved merged choices restored.");
@@ -297,11 +426,11 @@ export function PrototypeApp() {
             </div>
             <div>
               <span className="metric-label">Brand default</span>
-              <strong>{selectedBrand.name}</strong>
+              <strong>{selectedBrand.display_name}</strong>
             </div>
             <div>
               <span className="metric-label">Coverage</span>
-              <strong>{selectedBrand.coverage} sq ft/gal</strong>
+              <strong>{selectedBrand.coverage.default} sq ft/gal</strong>
             </div>
           </div>
         </div>
@@ -359,9 +488,23 @@ export function PrototypeApp() {
             <label className="field">
               <span>Paint brand</span>
               <select value={selectedBrandId} onChange={(event) => handleBrandChange(event.target.value)}>
-                {brandProfiles.map((brand) => (
+                {catalog.brands.map((brand) => (
                   <option key={brand.id} value={brand.id}>
-                    {brand.name} ({brand.retailer})
+                    {brand.display_name} ({brand.retailer})
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="field">
+              <span>Finish</span>
+              <select
+                value={defaultFinishId}
+                onChange={(event) => handleDefaultFinishChange(event.target.value)}
+              >
+                {selectedBrand.finishes.map((finish) => (
+                  <option key={finish.id} value={finish.id}>
+                    {finish.display_name}
                   </option>
                 ))}
               </select>
@@ -442,7 +585,7 @@ export function PrototypeApp() {
               </div>
               <div>
                 <span className="metric-label">Estimated total</span>
-                <strong>{estimateReady ? formatCanPlan(getTotalCanPlan(paletteColors, wallArea, parsedCoats, parsedWaste, selectedBrand.coverage)) : "--"}</strong>
+                <strong>{containerPlan ? formatContainerTotals(containerPlan.totals) : "--"}</strong>
               </div>
             </div>
 
@@ -489,6 +632,14 @@ export function PrototypeApp() {
                 >
                   Save Merge Choices
                 </button>
+                <button
+                  className="print-button"
+                  disabled={paletteColors.length === 0}
+                  onClick={handlePrint}
+                  type="button"
+                >
+                  Print / Save PDF
+                </button>
                 {savedMergePlan ? (
                   <button className="restore-button" onClick={restoreSavedChoices} type="button">
                     Restore Saved Palette
@@ -520,12 +671,92 @@ export function PrototypeApp() {
               )}
             </div>
 
+            {containerPlan ? (
+              <section className="print-summary" aria-labelledby="print-summary-heading">
+                <header className="print-summary-head">
+                  <div>
+                    <h3 id="print-summary-heading">Paint Plan</h3>
+                    <p>
+                      {selectedBrand.display_name} ({selectedBrand.retailer}) ·{" "}
+                      {Number.isFinite(wallArea) && wallArea > 0 ? `${wallArea.toFixed(0)} sq ft` : "wall size TBD"} ·{" "}
+                      {paletteColors.length} colors
+                    </p>
+                  </div>
+                  <div className="print-summary-total">
+                    <span className="metric-label">Estimated total</span>
+                    <strong>{formatCurrency(containerPlan.totals.estimatedCost, containerPlan.currency)}</strong>
+                  </div>
+                </header>
+                <div className="print-summary-images">
+                  {previewUrl ? (
+                    <figure>
+                      <img alt="Original artwork" src={previewUrl} />
+                      <figcaption>Original</figcaption>
+                    </figure>
+                  ) : null}
+                  {flattenedImageUrl ? (
+                    <figure>
+                      <img alt="Recolored using the merged palette" src={flattenedImageUrl} />
+                      <figcaption>Using merged palette</figcaption>
+                    </figure>
+                  ) : null}
+                </div>
+                <table className="print-summary-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Color</th>
+                      <th scope="col">Hex</th>
+                      <th scope="col">Coverage</th>
+                      <th scope="col">Finish</th>
+                      <th scope="col">Coats</th>
+                      <th scope="col">Order</th>
+                      <th scope="col">Expected use</th>
+                      <th scope="col">Price</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paletteColors.map((color) => {
+                      const plan = planByColorId.get(color.id);
+                      if (!plan) return null;
+                      const finish = selectedBrand.finishes.find((entry) => entry.id === plan.finishId);
+                      return (
+                        <tr key={color.id}>
+                          <th scope="row">
+                            <span className="print-swatch" style={{ backgroundColor: color.hex }} aria-hidden="true" />
+                          </th>
+                          <td>{color.hex}</td>
+                          <td>{color.coveragePercent.toFixed(1)}%</td>
+                          <td>{finish ? finish.display_name : plan.finishId}</td>
+                          <td>{plan.coats}</td>
+                          <td>{plan.packages.map(formatContainerEntry).join(" + ")}</td>
+                          <td>{formatOunces(plan.requiredGallons)}</td>
+                          <td>{formatCurrency(plan.estimatedCost, containerPlan.currency)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <th scope="row" colSpan={5}>
+                        Totals
+                      </th>
+                      <td>{formatContainerTotals(containerPlan.totals)}</td>
+                      <td>{formatOunces(containerPlan.perColor.reduce((sum, entry) => sum + entry.requiredGallons, 0))}</td>
+                      <td>{formatCurrency(containerPlan.totals.estimatedCost, containerPlan.currency)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+                <footer className="print-summary-footnote">
+                  Prices are planning snapshots — verify in-store before purchase.
+                </footer>
+              </section>
+            ) : null}
+
             <div className="palette-grid">
               {paletteColors.map((color) => {
                 const isSelected = selectedColorIds.includes(color.id);
-                const canPlan = estimateReady
-                  ? getColorCanPlan(color.coveragePercent, wallArea, parsedCoats, parsedWaste, selectedBrand.coverage)
-                  : null;
+                const colorPlan = planByColorId.get(color.id) ?? null;
+                const effectiveFinishId = colorFinishOverrides[color.id] ?? defaultFinishId;
 
                 return (
                   <article className={`swatch-card ${isSelected ? "swatch-card-selected" : ""}`} key={color.id}>
@@ -542,9 +773,31 @@ export function PrototypeApp() {
                         <span>{color.coveragePercent.toFixed(1)}%</span>
                       </div>
                       <p>{color.pixelCount.toLocaleString()} sampled pixels in this working color.</p>
+                      <label className="field field-inline swatch-finish">
+                        <span>Finish</span>
+                        <select
+                          value={effectiveFinishId}
+                          onChange={(event) => handleColorFinishChange(color.id, event.target.value)}
+                        >
+                          {selectedBrand.finishes.map((finish) => (
+                            <option key={finish.id} value={finish.id}>
+                              {finish.display_name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="field field-inline swatch-coats">
+                        <span>Coats</span>
+                        <input
+                          type="number"
+                          min="1"
+                          value={colorCoatsOverrides[color.id] ?? (Number.isFinite(parsedCoats) ? parsedCoats : 2)}
+                          onChange={(event) => handleColorCoatsChange(color.id, event.target.value)}
+                        />
+                      </label>
                       <div className="estimate-row">
-                        <span>{selectedBrand.name}</span>
-                        <strong>{canPlan ? formatCanPlan(canPlan) : "--"}</strong>
+                        <span>{selectedBrand.display_name}</span>
+                        <strong>{colorPlan ? formatContainerPackages(colorPlan) : "--"}</strong>
                       </div>
                     </div>
                   </article>
@@ -721,61 +974,98 @@ function rgbToHex([red, green, blue]: [number, number, number]) {
   return `#${[red, green, blue].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
 }
 
-function getColorCanPlan(
-  coveragePercent: number,
-  areaSqFt: number,
-  coats: number,
-  wasteFactor: number,
-  coverageSqFtPerGallon: number
-) {
-  const adjustedArea = areaSqFt * (coveragePercent / 100);
-  const requiredGallons = (adjustedArea * coats * (1 + wasteFactor)) / coverageSqFtPerGallon;
-  return buildCanPlan(requiredGallons);
-}
+const FLUID_OUNCES_PER_GALLON = 128;
 
-function getTotalCanPlan(
-  colors: PaletteColor[],
-  areaSqFt: number,
-  coats: number,
-  wasteFactor: number,
-  coverageSqFtPerGallon: number
-) {
-  const totalGallons = colors.reduce((sum, color) => {
-    return sum + (areaSqFt * (color.coveragePercent / 100) * coats * (1 + wasteFactor)) / coverageSqFtPerGallon;
-  }, 0);
-
-  return buildCanPlan(totalGallons);
-}
-
-function buildCanPlan(requiredGallons: number) {
-  const minimumGallons = Math.max(0.25, requiredGallons);
-  let remaining = minimumGallons;
-  const plan = canSizes.map((size) => ({ ...size }));
-
-  for (const entry of plan) {
-    if (entry.gallons === 0.25) {
-      entry.count = Math.ceil(remaining / entry.gallons);
-      remaining = 0;
-      break;
+function flattenImageToPalette(
+  source: { data: Uint8ClampedArray; width: number; height: number },
+  palette: PaletteColor[]
+): string | null {
+  if (typeof document === "undefined" || palette.length === 0) return null;
+  const out = new Uint8ClampedArray(source.data.length);
+  // sRGB Euclidean is close enough for paint-by-numbers flattening with small
+  // palettes and avoids a full Lab conversion per pixel. Perceptual accuracy
+  // is not the goal here — showing muralists roughly what their palette will
+  // render as is.
+  for (let i = 0; i < source.data.length; i += 4) {
+    const alpha = source.data[i + 3] ?? 0;
+    if (alpha < 128) {
+      out[i + 3] = 0;
+      continue;
     }
-
-    entry.count = Math.floor(remaining / entry.gallons);
-    remaining -= entry.count * entry.gallons;
+    const r = source.data[i] ?? 0;
+    const g = source.data[i + 1] ?? 0;
+    const b = source.data[i + 2] ?? 0;
+    let bestIndex = 0;
+    let bestDistance = Infinity;
+    for (let p = 0; p < palette.length; p += 1) {
+      const [pr, pg, pb] = palette[p]!.rgb;
+      const dr = r - pr;
+      const dg = g - pg;
+      const db = b - pb;
+      const d = dr * dr + dg * dg + db * db;
+      if (d < bestDistance) {
+        bestDistance = d;
+        bestIndex = p;
+      }
+    }
+    const rgb = palette[bestIndex]!.rgb;
+    out[i] = rgb[0];
+    out[i + 1] = rgb[1];
+    out[i + 2] = rgb[2];
+    out[i + 3] = 255;
   }
-
-  if (remaining > 0) {
-    plan[plan.length - 1]!.count += 1;
-  }
-
-  return {
-    requiredGallons: minimumGallons,
-    packages: plan.filter((entry) => entry.count > 0)
-  };
+  const canvas = document.createElement("canvas");
+  canvas.width = source.width;
+  canvas.height = source.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.putImageData(new ImageData(out, source.width, source.height), 0, 0);
+  return canvas.toDataURL("image/png");
 }
 
-function formatCanPlan(plan: { requiredGallons: number; packages: CanBreakdown[] }) {
-  const packageLabel = plan.packages.map((entry) => `${entry.count} × ${entry.label}`).join(" + ");
+function formatOunces(requiredGallons: number) {
+  const totalOunces = requiredGallons * FLUID_OUNCES_PER_GALLON;
+  if (totalOunces >= FLUID_OUNCES_PER_GALLON) {
+    return `${requiredGallons.toFixed(2)} gal (${totalOunces.toFixed(0)} oz)`;
+  }
+  return `${totalOunces.toFixed(1)} oz`;
+}
+
+function formatCurrency(amount: number, currency: string) {
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(amount);
+  } catch {
+    return `$${amount.toFixed(2)}`;
+  }
+}
+
+function formatContainerEntry(entry: ContainerPlanEntry) {
+  if (entry.unit === "gallon") {
+    return `${entry.count} × 1 gal can`;
+  }
+  if (entry.unit === "quart") {
+    return `${entry.count} × 1 qt can`;
+  }
+  return `${entry.count} × 8 oz sample`;
+}
+
+function formatContainerPackages(plan: ColorContainerPlan) {
+  const packageLabel = plan.packages.map(formatContainerEntry).join(" + ");
   return `${packageLabel} (${roundToTenths(plan.requiredGallons).toFixed(1)} gal est.)`;
+}
+
+function formatContainerTotals(totals: ContainerPlan["totals"]) {
+  const parts: string[] = [];
+  if (totals.gallons > 0) {
+    parts.push(`${totals.gallons} × 1 gal can`);
+  }
+  if (totals.quarts > 0) {
+    parts.push(`${totals.quarts} × 1 qt can`);
+  }
+  if (totals.samples > 0) {
+    parts.push(`${totals.samples} × 8 oz sample`);
+  }
+  return parts.length > 0 ? parts.join(" + ") : "--";
 }
 
 function formatSavedAt(savedAt: string) {

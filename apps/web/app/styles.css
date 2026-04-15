@@ -1,3 +1,193 @@
+/* added for per-chip finish / coats selectors + inline field variant */
+.field-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+.field-inline > span {
+  font-size: 0.8rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.field-inline > select,
+.field-inline > input {
+  flex: 1;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.9rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: rgba(255, 250, 243, 0.9);
+  color: var(--ink);
+}
+.field-inline > input[type="number"] {
+  max-width: 5rem;
+}
+.swatch-finish {
+  margin-top: 0.4rem;
+}
+.swatch-coats {
+  margin-top: 0.3rem;
+}
+
+.print-button {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--ink);
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  cursor: pointer;
+  font: inherit;
+}
+.print-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Screen preview of the store-ready sheet. Same DOM the print layout uses
+   so what the muralist sees on screen is what comes out of the printer. */
+.print-summary {
+  background: #ffffff;
+  color: #111111;
+  border: 1px solid rgba(17, 17, 17, 0.15);
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  margin: 1.25rem 0;
+  box-shadow: 0 4px 18px rgba(17, 17, 17, 0.06);
+  page-break-inside: avoid;
+}
+.print-summary-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid rgba(17, 17, 17, 0.12);
+  padding-bottom: 0.75rem;
+}
+.print-summary-head h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1.5rem;
+}
+.print-summary-head p {
+  margin: 0;
+  color: rgba(17, 17, 17, 0.7);
+}
+.print-summary-total {
+  text-align: right;
+}
+.print-summary-total strong {
+  font-size: 1.5rem;
+  display: block;
+}
+.print-summary-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.print-summary-images figure {
+  margin: 0;
+  text-align: center;
+}
+.print-summary-images img {
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  border: 1px solid rgba(17, 17, 17, 0.15);
+  background: #f4f4f4;
+}
+.print-summary-images figcaption {
+  font-size: 0.8rem;
+  color: rgba(17, 17, 17, 0.6);
+  margin-top: 0.25rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.print-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.print-summary-table th,
+.print-summary-table td {
+  padding: 0.45rem 0.5rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(17, 17, 17, 0.08);
+  vertical-align: middle;
+}
+.print-summary-table thead th {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(17, 17, 17, 0.6);
+}
+.print-summary-table tfoot th,
+.print-summary-table tfoot td {
+  border-top: 2px solid rgba(17, 17, 17, 0.25);
+  border-bottom: 0;
+  font-weight: 600;
+}
+.print-swatch {
+  display: inline-block;
+  width: 1.6rem;
+  height: 1.6rem;
+  border-radius: 4px;
+  border: 1px solid rgba(17, 17, 17, 0.25);
+  vertical-align: middle;
+}
+.print-summary-footnote {
+  margin-top: 0.75rem;
+  font-size: 0.75rem;
+  color: rgba(17, 17, 17, 0.55);
+}
+
+/* Store-ready print / Save-as-PDF output. Everything outside .print-summary
+   is hidden so the sheet shows only the flattened preview + color table. */
+@media print {
+  @page {
+    margin: 0.5in;
+  }
+  html,
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  body > *:not(.page-shell),
+  .site-header {
+    display: none !important;
+  }
+  .page-shell > *:not(.workspace-grid):not(.results-panel) {
+    display: none !important;
+  }
+  .workspace-grid {
+    display: none !important;
+  }
+  .results-panel {
+    background: #ffffff !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  .results-panel > *:not(.print-summary) {
+    display: none !important;
+  }
+  .print-summary {
+    border: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  .print-summary-images img {
+    max-height: 3in;
+  }
+  .hidden-canvas {
+    display: none !important;
+  }
+}
+
 :root {
   --bg: #f4ecdf;
   --bg-accent: #e5d4ba;

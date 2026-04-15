@@ -1,10 +1,27 @@
 # Global default paint-brand assumptions.
 # These values are intended to be rough planning inputs for the prototype.
 # Later versions should allow user-scoped overrides in the database.
+#
+# Prices are USD snapshots taken 2026-04 from public retailer / aggregator
+# pages and should be treated as rough planning inputs, not live quotes.
+# Finishes use each manufacturer's published labels for the listed product
+# line. Coverage multipliers are applied to coverage.default and reflect
+# rough industry convention (flatter sheens cover slightly more area than
+# glossier ones on the same paint). Per-finish coverage is not published
+# per-brand in a consistent way; refine as brand-specific data lands.
+#
+# Sample-size cans are 8oz (1/16 gallon) by convention across the three
+# seeded brands. Muralists use them for detail colors where a quart would
+# over-buy. We do not store a separate sample_coverage_sqft because sample
+# coverage follows directly from brand coverage * 0.0625 (volume fraction).
+#
+# TODO: Add an automated quarterly refresh so price / finish drift doesn't
+# silently invalidate the planning defaults.
 
 version: 1
 units:
   coverage: sqft_per_gallon
+  price: usd_per_unit
 
 brands:
   - id: sherwin_williams
@@ -16,9 +33,30 @@ brands:
       max: 400
     default_coats: 2
     confidence: rough_official_range
-    notes: Average planning range based on official coverage guidance.
+    notes: Average planning range based on official coverage guidance. Product line selected for pricing + finishes is SuperPaint Interior Acrylic Latex.
     sources:
       - https://images.sherwin-williams.com/content_images/sw-pdf-painter-skills-training-class-presentation-presenter-notes.pdf
+      - https://www.sherwin-williams.com/homeowners/products/superpaint-interior-acrylic-latex
+      - https://paintstrategies.com/sherwin-williams-paint-cost/
+    prices:
+      currency: USD
+      sample: 9.99
+      quart: 24.99
+      gallon: 60.49
+      as_of: "2026-04"
+    finishes:
+      - id: flat
+        display_name: Flat
+        coverage_multiplier: 1.00
+      - id: velvet
+        display_name: Velvet
+        coverage_multiplier: 0.98
+      - id: satin
+        display_name: Satin
+        coverage_multiplier: 0.95
+      - id: semi_gloss
+        display_name: Semi-Gloss
+        coverage_multiplier: 0.92
 
   - id: valspar
     display_name: Valspar
@@ -29,10 +67,31 @@ brands:
       max: 400
     default_coats: 2
     confidence: rough_official_range
-    notes: Planning baseline based on Lowe's listed maximum coverage area for Valspar interior paint products.
+    notes: Planning baseline based on Lowe's listed maximum coverage area for Valspar interior paint products. Product line selected for pricing + finishes is Valspar Signature Interior Paint + Primer.
     sources:
       - https://www.lowes.com/pd/Valspar-Reserve-Flat-Latex-Interior-Paint-and-Primer-in-One-Actual-Net-Contents-116-fl-oz/50146418
       - https://www.lowes.com/pd/Valspar-Signature-Base-B-Satin-Tintable-Interior-Paint-Actual-Net-Contents-118-fl-oz/1000381169
+      - https://www.lowes.com/pl/interior-paint/valspar/signature/4294729373-4294965540-4294394145
+      - https://www.valspar.com/en/products/interior-paints-primers/signature-interior-paint-primer
+    prices:
+      currency: USD
+      sample: 5.98
+      quart: 14.98
+      gallon: 39.98
+      as_of: "2026-04"
+    finishes:
+      - id: flat
+        display_name: Flat
+        coverage_multiplier: 1.00
+      - id: eggshell
+        display_name: Eggshell
+        coverage_multiplier: 0.98
+      - id: satin
+        display_name: Satin
+        coverage_multiplier: 0.95
+      - id: semi_gloss
+        display_name: Semi-Gloss
+        coverage_multiplier: 0.92
 
   - id: behr
     display_name: Behr
@@ -43,6 +102,27 @@ brands:
       max: 400
     default_coats: 2
     confidence: rough_official_range
-    notes: Wide planning range based on official technical data sheet coverage guidance.
+    notes: Wide planning range based on official technical data sheet coverage guidance. Product line selected for pricing + finishes is Behr Premium Plus Interior Paint & Primer.
     sources:
       - https://www.homedepot.com/catalog/pdfImages/d4/d4e8e494-8bea-47d2-bdd0-de306c300c10.pdf
+      - https://www.behr.com/consumer/products/interior-paint/premium-plus-interior
+      - https://www.homedepot.com/b/Paint-Paint-Colors/BEHR-PREMIUM-PLUS/Interior-Paint/N-5yc1vZcaw8ZgaoZ1z0q3xf
+    prices:
+      currency: USD
+      sample: 5.48
+      quart: 17.98
+      gallon: 29.98
+      as_of: "2026-04"
+    finishes:
+      - id: flat
+        display_name: Flat
+        coverage_multiplier: 1.00
+      - id: eggshell
+        display_name: Eggshell
+        coverage_multiplier: 0.98
+      - id: satin
+        display_name: Satin
+        coverage_multiplier: 0.95
+      - id: semi_gloss
+        display_name: Semi-Gloss
+        coverage_multiplier: 0.92
