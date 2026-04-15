@@ -109,6 +109,21 @@ export type ColorAreaEstimate = {
   areaSqFt: number;
 };
 
+export function buildMaquetteFileName(uploadedFileName: string): string {
+  const trimmed = uploadedFileName.trim();
+  if (!trimmed) {
+    return "muralist_maquette";
+  }
+
+  const lastSegment = trimmed.split(/[\\/]/).pop() ?? trimmed;
+  const withoutExtension = lastSegment.replace(/\.[^.]+$/, "");
+  const safeBase = withoutExtension
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  return `${safeBase || "muralist"}_maquette`;
+}
+
 export function getAuthCapabilities(): AuthCapabilities {
   return {
     mode: "oauth_only",

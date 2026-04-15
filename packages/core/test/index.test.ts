@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { PaintBrandCatalog } from "@muralist/config";
 import { loadPaintBrandCatalog } from "@muralist/config";
 import {
+  buildMaquetteFileName,
   compareAspectRatios,
   deriveColorAreaEstimates,
   deriveGridSpec,
@@ -97,6 +98,24 @@ test("color area estimates reject negative coverage", () => {
     () => deriveColorAreaEstimates(1200, [{ id: "bad", coveragePercent: -1 }]),
     /coveragePercent must be zero or greater/
   );
+});
+
+test("maquette file name appends suffix to the uploaded artwork name", () => {
+  assert.equal(
+    buildMaquetteFileName("winding-path-9840681_640.jpg"),
+    "winding-path-9840681_640_maquette"
+  );
+});
+
+test("maquette file name strips paths and unsafe characters", () => {
+  assert.equal(
+    buildMaquetteFileName("C:\\murals\\Dragon Tiger concept!!.png"),
+    "Dragon_Tiger_concept_maquette"
+  );
+});
+
+test("maquette file name falls back when the upload name is empty", () => {
+  assert.equal(buildMaquetteFileName("   "), "muralist_maquette");
 });
 
 test("paint estimation uses configured brand defaults", async () => {

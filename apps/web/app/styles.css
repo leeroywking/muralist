@@ -228,6 +228,8 @@
   border: 1px solid rgba(17, 17, 17, 0.32);
   border-radius: 4px;
   box-shadow: inset 0 0 0 0.18rem rgba(255, 255, 255, 0.32);
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
 }
 .print-summary-images {
   display: grid;
@@ -295,13 +297,15 @@
    is hidden so the sheet shows only the flattened preview + color table. */
 @media print {
   @page {
-    size: letter landscape;
-    margin: 0.5in;
+    size: letter portrait;
+    margin: 0.35in;
   }
   html,
   body {
     background: #ffffff !important;
     color: #000000 !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
   }
   body > *:not(.page-shell),
   .site-header {
@@ -329,39 +333,106 @@
     padding: 0 !important;
     margin: 0 !important;
   }
+  .print-summary-head {
+    gap: 0.08in;
+    margin-bottom: 0.08in;
+    padding-bottom: 0.06in;
+  }
+  .print-summary-head h3 {
+    font-size: 1rem;
+    margin-bottom: 0.02in;
+  }
+  .print-summary-head p,
+  .print-summary-total small {
+    font-size: 0.62rem;
+  }
+  .print-summary-total strong {
+    font-size: 0.95rem;
+  }
+  .ratio-warning {
+    padding: 0.06in 0.08in;
+    margin-bottom: 0.08in;
+    font-size: 0.65rem;
+  }
   .field-sheet-grid {
-    grid-template-columns: 1fr 1.8fr 1.25fr;
-    gap: 0.18in;
-  }
-  .field-sheet-notes {
-    min-height: 6.8in;
-  }
-  .notes-line {
-    height: 0.54in;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+    grid-template-areas:
+      "visuals data"
+      "notes data";
+    gap: 0.12in;
   }
   .field-sheet-visuals {
-    gap: 0.15in;
+    grid-area: visuals;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.08in;
+  }
+  .field-sheet-notes {
+    grid-area: notes;
+    min-height: 1.55in;
+    padding: 0.08in;
+  }
+  .field-sheet-notes strong {
+    font-size: 0.72rem;
+  }
+  .field-sheet-notes span {
+    font-size: 0.58rem;
+  }
+  .notes-line {
+    height: 0.22in;
   }
   .grid-preview-frame {
-    max-height: 2.55in;
+    max-height: 1.62in;
+  }
+  .grid-preview figcaption {
+    font-size: 0.56rem;
+    margin-top: 0.03in;
+  }
+  .grid-preview figcaption span {
+    display: none;
+  }
+  .field-sheet-scale {
+    grid-column: 1 / -1;
+    gap: 0.05in;
+  }
+  .field-sheet-scale div {
+    padding: 0.05in;
+  }
+  .field-sheet-scale dt {
+    font-size: 0.52rem;
+  }
+  .field-sheet-scale dd {
+    font-size: 0.58rem;
   }
   .field-sheet-data {
+    grid-area: data;
     max-height: none;
     overflow: visible;
   }
   .field-sheet-table {
-    font-size: 0.68rem;
+    font-size: 0.58rem;
   }
   .field-sheet-table th,
   .field-sheet-table td {
-    padding: 0.08in;
+    padding: 0.035in;
+  }
+  .field-sheet-table thead th {
+    font-size: 0.52rem;
+  }
+  .field-sheet-table tbody td,
+  .field-sheet-table tfoot td {
+    gap: 0.02in;
+  }
+  .field-sheet-table tbody td span,
+  .field-sheet-table tfoot td span {
+    font-size: 0.52rem;
   }
   .paint-over-swatch {
-    width: 1.25in;
-    height: 1.25in;
+    width: 0.62in;
+    height: 0.62in;
   }
   .print-summary-footnote {
-    font-size: 0.65rem;
+    margin-top: 0.06in;
+    font-size: 0.55rem;
   }
   .hidden-canvas {
     display: none !important;

@@ -10,6 +10,7 @@ import type {
   GridSpec
 } from "@muralist/core";
 import {
+  buildMaquetteFileName,
   compareAspectRatios,
   deriveColorAreaEstimates,
   deriveGridSpec,
@@ -392,6 +393,13 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
 
   function handlePrint() {
     if (typeof window !== "undefined") {
+      const originalTitle = document.title;
+      document.title = buildMaquetteFileName(fileName);
+      const restoreTitle = () => {
+        document.title = originalTitle;
+        window.removeEventListener("afterprint", restoreTitle);
+      };
+      window.addEventListener("afterprint", restoreTitle);
       window.print();
     }
   }
@@ -958,11 +966,14 @@ function FieldSheet({
               {model.colors.map((color) => (
                 <tr key={color.colorId}>
                   <th scope="row">
-                    <span
+                    <svg
                       className="paint-over-swatch"
-                      style={{ backgroundColor: color.hex }}
+                      role="img"
                       aria-label={`Paint-over swatch for ${color.hex}`}
-                    />
+                      viewBox="0 0 100 100"
+                    >
+                      <rect width="100" height="100" fill={color.hex} />
+                    </svg>
                   </th>
                   <td>
                     <strong>{color.hex}</strong>
