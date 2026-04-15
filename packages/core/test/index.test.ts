@@ -517,6 +517,40 @@ test("classifyPaletteColors keeps a lone off-line accent as buy", () => {
   assert.equal(accent?.classification, "buy");
 });
 
+test("classifyPaletteColors resolves transitive absorb chains across dedup and gradient passes", () => {
+  // Two clusters along a mixing line. Each cluster has a dedup pair (tight
+  // Euclidean neighbors). The cluster centroids lie on a segment with a
+  // mid-gradient color in between. Mid's coverage is below the mix threshold
+  // so it should absorb into the cluster it is nearest to. The dedup pair
+  // inside the target cluster was routed to a color that Phase 2 then also
+  // absorbs — without path compression the final pointers would reference
+  // a no-longer-surviving keeper.
+  const colors: ClassifyPaletteInput[] = [
+    { id: "red-main", rgb: [210, 40, 40], pixelCount: 100 },
+    { id: "red-near", rgb: [214, 44, 43], pixelCount: 20 },
+    { id: "blue-main", rgb: [40, 40, 210], pixelCount: 90 },
+    { id: "blue-near", rgb: [36, 43, 213], pixelCount: 15 },
+    { id: "mid", rgb: [125, 40, 125], pixelCount: 8 }
+  ];
+  const classifications = classifyPaletteColors(colors, {
+    residualThreshold: 28,
+    mixCoveragePercent: 10
+  });
+  // Every absorb must point at a buy so applyClassification can fold safely.
+  const buyIds = new Set(
+    classifications.filter((entry) => entry.classification === "buy").map((entry) => entry.id)
+  );
+  for (const entry of classifications) {
+    if (entry.classification !== "absorb") continue;
+    assert.ok(
+      entry.absorbedIntoId && buyIds.has(entry.absorbedIntoId),
+      `${entry.id} should absorb into a buy color, not ${entry.absorbedIntoId}`
+    );
+  }
+  // And applyClassification should not throw on the chain.
+  assert.doesNotThrow(() => applyClassification(colors, classifications));
+});
+
 test("classifyPaletteColors deduplicates near-neighbors even when no mixing line exists", () => {
   // Two tight clusters plus a distant outlier. No color is on a line between
   // others, but each cluster has near-duplicate members that should collapse.

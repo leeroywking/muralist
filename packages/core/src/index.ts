@@ -575,6 +575,27 @@ export function classifyPaletteColors(
     });
   }
 
+  // Final path compression across the full classification map. A Phase 0
+  // keeper can itself be classified as absorb in Phase 2 (it survived dedup
+  // but turned out to be on a mixing line). Without this walk, colors that
+  // Phase 0 routed to that keeper now point at an absorbed id, and
+  // applyClassification's pixelCount fold throws when it hits the stale
+  // reference.
+  for (const [id, entry] of classifications.entries()) {
+    if (entry.classification !== "absorb" || !entry.absorbedIntoId) continue;
+    let target = entry.absorbedIntoId;
+    const visited = new Set<string>([id]);
+    while (!visited.has(target)) {
+      visited.add(target);
+      const next = classifications.get(target);
+      if (!next || next.classification !== "absorb" || !next.absorbedIntoId) break;
+      target = next.absorbedIntoId;
+    }
+    if (target !== entry.absorbedIntoId) {
+      classifications.set(id, { ...entry, absorbedIntoId: target });
+    }
+  }
+
   return colors.map((color) => classifications.get(color.id)!);
 }
 
