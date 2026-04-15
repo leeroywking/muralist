@@ -16,6 +16,7 @@ import {
   deriveGridSpec,
   suggestContainersForColors
 } from "@muralist/core";
+import { downloadMaquettePdf } from "./maquettePdf";
 
 type PaletteColor = {
   id: string;
@@ -31,7 +32,7 @@ type AnalysisResult = {
   colors: PaletteColor[];
 };
 
-type FieldSheetColor = {
+export type FieldSheetColor = {
   colorId: string;
   hex: string;
   coveragePercent: number;
@@ -43,7 +44,7 @@ type FieldSheetColor = {
   estimatedCost: number;
 };
 
-type FieldSheetModel = {
+export type FieldSheetModel = {
   fileName: string;
   artistNotes: string;
   sourceSize: { widthPx: number; heightPx: number };
@@ -117,6 +118,8 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   const [saveMessage, setSaveMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
 
   const selectedBrand =
     catalog.brands.find((brand) => brand.id === selectedBrandId) ?? defaultBrand;
@@ -406,6 +409,29 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       };
       window.addEventListener("afterprint", restoreTitle);
       window.print();
+    }
+  }
+
+  async function handleDownloadPdf() {
+    if (!fieldSheetModel) {
+      return;
+    }
+    setIsGeneratingPdf(true);
+    setPdfError(null);
+    try {
+      await downloadMaquettePdf({
+        model: fieldSheetModel,
+        originalImageUrl: previewUrl,
+        reducedImageUrl: flattenedImageUrl
+      });
+    } catch (downloadError) {
+      setPdfError(
+        downloadError instanceof Error
+          ? downloadError.message
+          : "Could not generate the maquette PDF."
+      );
+    } finally {
+      setIsGeneratingPdf(false);
     }
   }
 
@@ -771,12 +797,21 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                   Save Merge Choices
                 </button>
                 <button
-                  className="print-button"
+                  className="pdf-button"
+                  disabled={!fieldSheetModel || isGeneratingPdf}
+                  onClick={handleDownloadPdf}
+                  type="button"
+                >
+                  {isGeneratingPdf ? "Generating PDF..." : "Download Maquette PDF"}
+                </button>
+                <button
+                  className="print-button print-button-fallback"
                   disabled={paletteColors.length === 0}
                   onClick={handlePrint}
                   type="button"
+                  title="Fallback: render the HTML field sheet through the browser print dialog."
                 >
-                  Print / Save PDF
+                  Print (fallback)
                 </button>
                 {savedMergePlan ? (
                   <button className="restore-button" onClick={restoreSavedChoices} type="button">
@@ -787,6 +822,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
             </div>
 
             {saveMessage ? <p className="status">{saveMessage}</p> : null}
+            {pdfError ? <p className="status error">{pdfError}</p> : null}
 
             <div className="selection-strip">
               {selectedColorIds.length > 0 ? (
