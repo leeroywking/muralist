@@ -30,7 +30,8 @@
   margin-top: 0.3rem;
 }
 
-.print-button {
+.print-button,
+.pdf-button {
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.92);
   color: var(--ink);
@@ -39,7 +40,18 @@
   cursor: pointer;
   font: inherit;
 }
-.print-button:disabled {
+.pdf-button {
+  border: 0;
+  background: linear-gradient(135deg, var(--accent), #dd7d33);
+  color: white;
+  border-radius: 14px;
+}
+.print-button-fallback {
+  font-size: 0.85em;
+  opacity: 0.85;
+}
+.print-button:disabled,
+.pdf-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
