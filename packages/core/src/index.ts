@@ -52,6 +52,7 @@ export type ColorContainerPlan = {
   coats: number;
   requiredGallons: number;
   packages: ContainerPlanEntry[];
+  estimatedCost: number;
 };
 
 export type ContainerPlan = {
@@ -60,7 +61,9 @@ export type ContainerPlan = {
     gallons: number;
     quarts: number;
     samples: number;
+    estimatedCost: number;
   };
+  currency: string;
 };
 
 export type SuggestContainersInput = {
@@ -165,13 +168,15 @@ export function suggestContainersForColors(
     const colorArea = input.areaSqFt * (color.coveragePercent / 100);
     const requiredGallons = (colorArea * colorCoats * (1 + wasteFactor)) / effectiveCoverage;
     const packages = packContainersForColor(requiredGallons, brand.prices);
+    const estimatedCost = computePackageCost(packages, brand.prices);
 
     return {
       colorId: color.id,
       finishId,
       coats: colorCoats,
       requiredGallons,
-      packages
+      packages,
+      estimatedCost
     };
   });
 
@@ -186,12 +191,28 @@ export function suggestContainersForColors(
           acc.samples += entry.count;
         }
       }
+      acc.estimatedCost += plan.estimatedCost;
       return acc;
     },
-    { gallons: 0, quarts: 0, samples: 0 }
+    { gallons: 0, quarts: 0, samples: 0, estimatedCost: 0 }
   );
 
-  return { perColor, totals };
+  return { perColor, totals, currency: brand.prices.currency };
+}
+
+function computePackageCost(
+  packages: ContainerPlanEntry[],
+  prices: PaintBrandPrices
+): number {
+  return packages.reduce((sum, entry) => {
+    if (entry.unit === "gallon") {
+      return sum + entry.count * prices.gallon;
+    }
+    if (entry.unit === "quart") {
+      return sum + entry.count * prices.quart;
+    }
+    return sum + entry.count * prices.sample;
+  }, 0);
 }
 
 function packContainersForColor(

@@ -227,6 +227,25 @@ test("per-color coats: zero or negative coats throws", () => {
   );
 });
 
+test("estimated cost per color equals the sum of its package line prices", () => {
+  const catalog = buildCheapQuartsCatalog();
+  const plan = suggestContainersForColors(
+    {
+      brandId: "fixture_cheap_qt",
+      areaSqFt: 1000,
+      coats: 2,
+      wasteFactor: 0,
+      colors: [{ id: "c1", coveragePercent: 30 }]
+    },
+    catalog
+  );
+  // requiredGallons ≈ 1.5 → 1 gallon ($50) + 2 quarts ($5 each) = $60
+  const entry = plan.perColor[0]!;
+  assert.equal(entry.estimatedCost, 60);
+  assert.equal(plan.totals.estimatedCost, 60);
+  assert.equal(plan.currency, "USD");
+});
+
 test("D: sample regime skipped when sample price is not cheaper than a quart", () => {
   const catalog = buildSampleNotCheaperCatalog();
   const plan = suggestContainersForColors(

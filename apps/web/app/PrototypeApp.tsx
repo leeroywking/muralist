@@ -55,7 +55,9 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   };
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sourcePixelsRef = useRef<{ data: Uint8ClampedArray; width: number; height: number } | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [flattenedImageUrl, setFlattenedImageUrl] = useState<string | null>(null);
   const [fileName, setFileName] = useState("");
   const [sourceAnalysis, setSourceAnalysis] = useState<AnalysisResult | null>(null);
   const [paletteColors, setPaletteColors] = useState<PaletteColor[]>([]);
@@ -126,6 +128,36 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     estimateReady
   ]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const source = sourcePixelsRef.current;
+    if (!source || paletteColors.length === 0) {
+      setFlattenedImageUrl(null);
+      return;
+    }
+    let cancelled = false;
+    const compute = () => {
+      const flat = flattenImageToPalette(source, paletteColors);
+      if (!cancelled) {
+        setFlattenedImageUrl(flat);
+      }
+    };
+    const idleId = (window as unknown as { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
+    if (typeof idleId === "function") {
+      const handle = idleId(compute);
+      return () => {
+        cancelled = true;
+        const cancelIdle = (window as unknown as { cancelIdleCallback?: (h: number) => void }).cancelIdleCallback;
+        if (typeof cancelIdle === "function") cancelIdle(handle);
+      };
+    }
+    const timeoutId = window.setTimeout(compute, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [paletteColors]);
+
   const planByColorId = useMemo(() => {
     const map = new Map<string, ColorContainerPlan>();
     if (containerPlan) {
@@ -185,12 +217,20 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setMergeKeeperId("");
     setColorFinishOverrides({});
     setColorCoatsOverrides({});
+    setFlattenedImageUrl(null);
+    sourcePixelsRef.current = null;
 
     startTransition(async () => {
       try {
         const result = await analyzeImage(file, canvasRef.current);
         setSourceAnalysis(result);
         setPaletteColors(result.colors);
+        const canvas = canvasRef.current;
+        const ctx = canvas?.getContext("2d", { willReadFrequently: true });
+        if (canvas && ctx) {
+          const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          sourcePixelsRef.current = { data: new Uint8ClampedArray(img.data), width: canvas.width, height: canvas.height };
+        }
       } catch (analysisError) {
         setSourceAnalysis(null);
         setPaletteColors([]);
@@ -631,6 +671,87 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
               )}
             </div>
 
+            {containerPlan ? (
+              <section className="print-summary" aria-labelledby="print-summary-heading">
+                <header className="print-summary-head">
+                  <div>
+                    <h3 id="print-summary-heading">Paint Plan</h3>
+                    <p>
+                      {selectedBrand.display_name} ({selectedBrand.retailer}) ·{" "}
+                      {Number.isFinite(wallArea) && wallArea > 0 ? `${wallArea.toFixed(0)} sq ft` : "wall size TBD"} ·{" "}
+                      {paletteColors.length} colors
+                    </p>
+                  </div>
+                  <div className="print-summary-total">
+                    <span className="metric-label">Estimated total</span>
+                    <strong>{formatCurrency(containerPlan.totals.estimatedCost, containerPlan.currency)}</strong>
+                  </div>
+                </header>
+                <div className="print-summary-images">
+                  {previewUrl ? (
+                    <figure>
+                      <img alt="Original artwork" src={previewUrl} />
+                      <figcaption>Original</figcaption>
+                    </figure>
+                  ) : null}
+                  {flattenedImageUrl ? (
+                    <figure>
+                      <img alt="Recolored using the merged palette" src={flattenedImageUrl} />
+                      <figcaption>Using merged palette</figcaption>
+                    </figure>
+                  ) : null}
+                </div>
+                <table className="print-summary-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Color</th>
+                      <th scope="col">Hex</th>
+                      <th scope="col">Coverage</th>
+                      <th scope="col">Finish</th>
+                      <th scope="col">Coats</th>
+                      <th scope="col">Order</th>
+                      <th scope="col">Expected use</th>
+                      <th scope="col">Price</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paletteColors.map((color) => {
+                      const plan = planByColorId.get(color.id);
+                      if (!plan) return null;
+                      const finish = selectedBrand.finishes.find((entry) => entry.id === plan.finishId);
+                      return (
+                        <tr key={color.id}>
+                          <th scope="row">
+                            <span className="print-swatch" style={{ backgroundColor: color.hex }} aria-hidden="true" />
+                          </th>
+                          <td>{color.hex}</td>
+                          <td>{color.coveragePercent.toFixed(1)}%</td>
+                          <td>{finish ? finish.display_name : plan.finishId}</td>
+                          <td>{plan.coats}</td>
+                          <td>{plan.packages.map(formatContainerEntry).join(" + ")}</td>
+                          <td>{formatOunces(plan.requiredGallons)}</td>
+                          <td>{formatCurrency(plan.estimatedCost, containerPlan.currency)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <th scope="row" colSpan={5}>
+                        Totals
+                      </th>
+                      <td>{formatContainerTotals(containerPlan.totals)}</td>
+                      <td>{formatOunces(containerPlan.perColor.reduce((sum, entry) => sum + entry.requiredGallons, 0))}</td>
+                      <td>{formatCurrency(containerPlan.totals.estimatedCost, containerPlan.currency)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+                <footer className="print-summary-footnote">
+                  Prices are planning snapshots — verify in-store before purchase.
+                </footer>
+              </section>
+            ) : null}
+
             <div className="palette-grid">
               {paletteColors.map((color) => {
                 const isSelected = selectedColorIds.includes(color.id);
@@ -851,6 +972,71 @@ function weightedAverage(
 
 function rgbToHex([red, green, blue]: [number, number, number]) {
   return `#${[red, green, blue].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
+}
+
+const FLUID_OUNCES_PER_GALLON = 128;
+
+function flattenImageToPalette(
+  source: { data: Uint8ClampedArray; width: number; height: number },
+  palette: PaletteColor[]
+): string | null {
+  if (typeof document === "undefined" || palette.length === 0) return null;
+  const out = new Uint8ClampedArray(source.data.length);
+  // sRGB Euclidean is close enough for paint-by-numbers flattening with small
+  // palettes and avoids a full Lab conversion per pixel. Perceptual accuracy
+  // is not the goal here — showing muralists roughly what their palette will
+  // render as is.
+  for (let i = 0; i < source.data.length; i += 4) {
+    const alpha = source.data[i + 3] ?? 0;
+    if (alpha < 128) {
+      out[i + 3] = 0;
+      continue;
+    }
+    const r = source.data[i] ?? 0;
+    const g = source.data[i + 1] ?? 0;
+    const b = source.data[i + 2] ?? 0;
+    let bestIndex = 0;
+    let bestDistance = Infinity;
+    for (let p = 0; p < palette.length; p += 1) {
+      const [pr, pg, pb] = palette[p]!.rgb;
+      const dr = r - pr;
+      const dg = g - pg;
+      const db = b - pb;
+      const d = dr * dr + dg * dg + db * db;
+      if (d < bestDistance) {
+        bestDistance = d;
+        bestIndex = p;
+      }
+    }
+    const rgb = palette[bestIndex]!.rgb;
+    out[i] = rgb[0];
+    out[i + 1] = rgb[1];
+    out[i + 2] = rgb[2];
+    out[i + 3] = 255;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = source.width;
+  canvas.height = source.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.putImageData(new ImageData(out, source.width, source.height), 0, 0);
+  return canvas.toDataURL("image/png");
+}
+
+function formatOunces(requiredGallons: number) {
+  const totalOunces = requiredGallons * FLUID_OUNCES_PER_GALLON;
+  if (totalOunces >= FLUID_OUNCES_PER_GALLON) {
+    return `${requiredGallons.toFixed(2)} gal (${totalOunces.toFixed(0)} oz)`;
+  }
+  return `${totalOunces.toFixed(1)} oz`;
+}
+
+function formatCurrency(amount: number, currency: string) {
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(amount);
+  } catch {
+    return `$${amount.toFixed(2)}`;
+  }
 }
 
 function formatContainerEntry(entry: ContainerPlanEntry) {

@@ -174,3 +174,23 @@ If any manual check cannot actually be performed (e.g. sandbox can't run the web
   - "Save as PDF" is the browser's built-in print destination — no new JS dependency added.
 - **Why no `jspdf` or similar:** Adding a client-side PDF library would cross AGENTS.md "Dependency versions ... are their own task" for a feature the browser already supports natively via print-to-PDF. The CSS approach produces the same artifact with zero dependency surface.
 - **Kept out:** Per-color price sub-totals, per-store formatting, palette color names (user hasn't assigned names yet in this prototype). Those are independently-scoped follow-ups.
+
+## 9. Scope addendum: real store-ready print artifact + per-color/total prices
+
+**2026-04-14 (third iteration in the same session):** User ran through the v2 preview and reported that "Print / Save PDF" wasn't actually producing a distinct artifact — the print output was basically the main page with some chrome hidden. Also requested: expected price per color and a total, plus a **flattened** version of the image rendered using the merged palette (paint-by-numbers style), referencing how muralist paint-planning sheets are typically laid out (ref: Just Paint, "Estimating Paint Amounts for a Mural"; PBNify / PhotoGrid for the flattening pattern).
+
+**What shipped:**
+
+- **Flattened preview.** After analysis the source pixel buffer is cached (`sourcePixelsRef`), and a `useEffect` recomputes a palette-flattened image whenever the palette changes. Each source pixel is remapped to the nearest palette color by sRGB Euclidean distance (good enough for small post-merge palettes; Lab adds cost without visible difference here). Result is rendered to a detached `<canvas>` and surfaced as a data URL.
+- **Dedicated Paint Plan sheet.** A new `.print-summary` section renders inside the palette panel on screen (so the muralist sees on screen exactly what prints). Contains:
+  - Header with brand + retailer + wall area + color count, and the grand-total price aligned right.
+  - Two-up figures: *Original* artwork and *Using merged palette* (the flattened render). Side-by-side, captioned.
+  - A color table with columns: swatch, hex, coverage %, finish, coats, **Order** (`2 × 1 qt can` etc.), **Expected use** (`X.X oz` or `X.X gal (Y oz)`), **Price** (per-color).
+  - Footer total row: total container mix, total expected use in ounces, grand-total price.
+  - Short footnote ("Prices are planning snapshots — verify in-store before purchase.") so the sheet can't be mistaken for a live quote.
+- **Pricing surfaced.** `ColorContainerPlan` now carries `estimatedCost`; `ContainerPlan.totals` carries `estimatedCost` + `currency`. Prices are summed from `brand.prices` × package counts (gallons × gallon_price + quarts × quart_price + samples × sample_price). Rendered via `Intl.NumberFormat("en-US", { style: "currency", currency })`.
+- **Print CSS rewritten.** `@media print` hides everything outside `.print-summary` (not just decorative chrome), forces page margins to 0.5in, caps the flattened/original image heights at 3in so the palette table fits on one page at letter/A4 for typical mural counts, and removes all card borders/shadows so it prints clean on white.
+
+**Tests:** `packages/core` gains "estimated cost per color equals sum of package line prices" (expected 1 × $50 gallon + 2 × $5 quarts = $60 from the cheap-quarts fixture).
+
+**Out of scope (still):** per-finish sample pricing, background flattening on a web worker for very large images (current single-threaded loop is fine at `maxDimension = 320`), color names, multi-page print pagination for palettes > ~15 colors.
