@@ -35,7 +35,7 @@
   background: rgba(255, 255, 255, 0.92);
   color: var(--ink);
   padding: 0.9rem 1rem;
-  border-radius: 14px;
+  border-radius: 8px;
   cursor: pointer;
   font: inherit;
 }
@@ -50,7 +50,7 @@
   background: #ffffff;
   color: #111111;
   border: 1px solid rgba(17, 17, 17, 0.15);
-  border-radius: 12px;
+  border-radius: 8px;
   padding: 1.25rem 1.5rem;
   margin: 1.25rem 0;
   box-shadow: 0 4px 18px rgba(17, 17, 17, 0.06);
@@ -80,6 +80,186 @@
 .print-summary-total strong {
   font-size: 1.5rem;
   display: block;
+}
+.print-summary-total small {
+  display: block;
+  max-width: 18rem;
+  color: rgba(17, 17, 17, 0.6);
+  font-size: 0.8rem;
+}
+.field-sheet {
+  overflow: hidden;
+}
+.field-sheet-title {
+  margin: 0 0 0.75rem;
+  font-size: 1.2rem;
+}
+.ratio-warning {
+  border: 1px solid rgba(201, 93, 28, 0.45);
+  background: rgba(201, 93, 28, 0.1);
+  color: #4f250d;
+  padding: 0.75rem 0.9rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+}
+.field-sheet-grid {
+  display: grid;
+  grid-template-columns: minmax(12rem, 0.8fr) minmax(18rem, 1.2fr);
+  grid-template-areas:
+    "visuals visuals"
+    "palette palette"
+    "notes notes";
+  gap: 1rem;
+  align-items: start;
+}
+.field-sheet-notes {
+  grid-area: notes;
+  border: 1px solid rgba(17, 17, 17, 0.16);
+  border-radius: 8px;
+  padding: 0.9rem;
+}
+.field-sheet-notes-label {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 0.45rem;
+}
+.field-sheet-notes textarea {
+  display: block;
+  width: 100%;
+  min-height: 7rem;
+  resize: vertical;
+  border: 1px solid rgba(17, 17, 17, 0.18);
+  border-radius: 8px;
+  padding: 0.75rem;
+  font: inherit;
+  color: #111111;
+  background: #ffffff;
+}
+.field-sheet-print-notes {
+  display: none;
+  white-space: pre-wrap;
+  color: rgba(17, 17, 17, 0.78);
+}
+.field-sheet-visuals {
+  grid-area: visuals;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.grid-preview {
+  margin: 0;
+}
+.grid-preview-frame {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid rgba(17, 17, 17, 0.18);
+  background: #f4f4f4;
+}
+.grid-preview-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.grid-preview-image-fill {
+  object-fit: fill;
+}
+.grid-preview-image-contain {
+  object-fit: contain;
+}
+.grid-preview-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  min-height: 7rem;
+  color: rgba(17, 17, 17, 0.55);
+  font-size: 0.9rem;
+}
+.grid-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.grid-overlay line {
+  stroke: rgba(0, 0, 0, 0.55);
+  stroke-width: 0.22;
+  vector-effect: non-scaling-stroke;
+}
+.grid-preview figcaption {
+  display: grid;
+  gap: 0.15rem;
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+}
+.grid-preview figcaption span {
+  color: rgba(17, 17, 17, 0.62);
+}
+.field-sheet-scale {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0;
+}
+.field-sheet-scale div {
+  border: 1px solid rgba(17, 17, 17, 0.14);
+  border-radius: 8px;
+  padding: 0.5rem;
+}
+.field-sheet-scale dt {
+  color: rgba(17, 17, 17, 0.58);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.field-sheet-scale dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.86rem;
+}
+.field-sheet-palette {
+  grid-area: palette;
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(18rem, 1fr);
+  gap: 0;
+  align-items: stretch;
+}
+.field-sheet-mix-space {
+  min-height: 100%;
+  border-top: 1px solid rgba(17, 17, 17, 0.08);
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 5.1rem,
+    rgba(17, 17, 17, 0.08) 5.1rem,
+    rgba(17, 17, 17, 0.08) 5.16rem
+  );
+}
+.field-sheet-table th,
+.field-sheet-table td {
+  vertical-align: top;
+}
+.field-sheet-table tbody td,
+.field-sheet-table tfoot td {
+  display: grid;
+  gap: 0.2rem;
+}
+.field-sheet-table tbody td span,
+.field-sheet-table tfoot td span {
+  display: block;
+  color: rgba(17, 17, 17, 0.7);
+  font-size: 0.78rem;
+}
+.paint-over-swatch {
+  display: block;
+  width: 5rem;
+  height: 5rem;
+  border: 1px solid rgba(17, 17, 17, 0.32);
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 0.18rem rgba(255, 255, 255, 0.32);
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
 }
 .print-summary-images {
   display: grid;
@@ -138,21 +318,32 @@
   vertical-align: middle;
 }
 .print-summary-footnote {
+  display: grid;
+  gap: 0.2rem;
   margin-top: 0.75rem;
   font-size: 0.75rem;
   color: rgba(17, 17, 17, 0.55);
+}
+.print-summary-footnote strong {
+  color: rgba(17, 17, 17, 0.85);
+}
+.print-summary-footnote span {
+  display: block;
 }
 
 /* Store-ready print / Save-as-PDF output. Everything outside .print-summary
    is hidden so the sheet shows only the flattened preview + color table. */
 @media print {
   @page {
-    margin: 0.5in;
+    size: letter portrait;
+    margin: 0.35in;
   }
   html,
   body {
     background: #ffffff !important;
     color: #000000 !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
   }
   body > *:not(.page-shell),
   .site-header {
@@ -180,8 +371,106 @@
     padding: 0 !important;
     margin: 0 !important;
   }
-  .print-summary-images img {
-    max-height: 3in;
+  .field-sheet-title {
+    display: none;
+  }
+  .ratio-warning {
+    padding: 0.06in 0.08in;
+    margin-bottom: 0.08in;
+    font-size: 0.65rem;
+  }
+  .field-sheet-grid {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+    grid-template-areas:
+      "visuals visuals"
+      "mix palette"
+      "notes notes";
+    gap: 0.12in;
+  }
+  .field-sheet-visuals {
+    grid-area: visuals;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.08in;
+  }
+  .field-sheet-palette {
+    display: contents;
+  }
+  .field-sheet-mix-space {
+    grid-area: mix;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 0.67in,
+      rgba(17, 17, 17, 0.12) 0.67in,
+      rgba(17, 17, 17, 0.12) 0.68in
+    );
+  }
+  .field-sheet-notes {
+    grid-area: notes;
+    padding: 0.08in;
+  }
+  .field-sheet-notes-label {
+    font-size: 0.72rem;
+  }
+  .field-sheet-notes textarea {
+    display: none;
+  }
+  .field-sheet-print-notes {
+    display: block;
+    min-height: 0.62in;
+    border-top: 1px solid rgba(17, 17, 17, 0.12);
+    padding-top: 0.04in;
+    font-size: 0.58rem;
+  }
+  .grid-preview-frame {
+    max-height: 2.05in;
+  }
+  .grid-preview figcaption {
+    font-size: 0.56rem;
+    margin-top: 0.03in;
+  }
+  .grid-preview figcaption span {
+    display: none;
+  }
+  .field-sheet-scale {
+    grid-column: 1 / -1;
+    gap: 0.05in;
+  }
+  .field-sheet-scale div {
+    padding: 0.05in;
+  }
+  .field-sheet-scale dt {
+    font-size: 0.52rem;
+  }
+  .field-sheet-scale dd {
+    font-size: 0.58rem;
+  }
+  .field-sheet-table {
+    grid-area: palette;
+    font-size: 0.58rem;
+  }
+  .field-sheet-table th,
+  .field-sheet-table td {
+    padding: 0.035in;
+  }
+  .field-sheet-table thead th {
+    font-size: 0.52rem;
+  }
+  .field-sheet-table tbody td,
+  .field-sheet-table tfoot td {
+    gap: 0.02in;
+  }
+  .field-sheet-table tbody td span,
+  .field-sheet-table tfoot td span {
+    font-size: 0.52rem;
+  }
+  .paint-over-swatch {
+    width: 0.62in;
+    height: 0.62in;
+  }
+  .print-summary-footnote {
+    margin-top: 0.06in;
+    font-size: 0.55rem;
   }
   .hidden-canvas {
     display: none !important;
@@ -683,6 +972,8 @@ h1 {
   .hero-grid,
   .workspace-grid,
   .form-grid,
+  .field-sheet-grid,
+  .field-sheet-scale,
   .merge-toolbar {
     grid-template-columns: 1fr;
   }
