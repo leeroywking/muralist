@@ -460,3 +460,15 @@ Pages-only deployment is not sufficient by itself. This round is not done unless
 ## Working Agreement
 
 This file is the shared planning source for the project until implementation docs become necessary. Update it when scope, architecture, or delivery sequencing changes.
+
+## 2026-04-23 Update — Persistence + Auth Backend Plan
+
+The scoping round documented in `docs/plans/persistence-and-auth-backend.md` updates the status of several earlier roadmap items:
+
+- **Phase 2 "Basic auth"** — in progress, landing as part of the persistence + auth backend build. OAuth-only via Better Auth, providers Google / Apple / Facebook / Adobe, HttpOnly cookie + CSRF sessions.
+- **Phase 2 "User-scoped paint brand preferences"** — reclassified as a paid-tier feature under the user paint library bucket per `project_monetization_principle` memory. Not shipping in this round; pinned for a later dev-ready release.
+- **"Multi-wall projects" (was a scoping candidate)** — formally shelved. Users can plan multiple walls as separate projects or enter a combined wall length; a dedicated multi-wall abstraction did not earn its own concept.
+- **Cloud target** — earlier "Deployment target: AWS-compatible architecture" is superseded. Current target is DigitalOcean App Platform + DO Managed MongoDB + Cloudflare Free. AWS is explicitly ruled out for this product. See `docs/ARCHITECTURE.md` 2026-04-23 update for the full rationale.
+- **Data store** — earlier "DynamoDB-first NoSQL model" is superseded by "document-shaped aggregates on MongoDB." The aggregate-shape discipline (no relational joins across entities) carries over.
+
+See `docs/RETENTION_POLICY.md` for the user-facing retention rules and `docs/plans/persistence-and-auth-backend.md` for the implementation plan.
