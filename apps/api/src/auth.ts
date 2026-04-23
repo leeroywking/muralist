@@ -32,11 +32,32 @@ export type CreateAuthOptions = {
 
 /**
  * Minimal shape of a Better Auth instance the Fastify server needs. We keep
- * this narrow so tests can inject a stub `{ handler }` object without
- * reconstructing the entire `Auth` generic type graph.
+ * this narrow so tests can inject a stub without reconstructing the entire
+ * `Auth` generic type graph. Includes the Fetch-style `handler` plus
+ * `api.getSession`, which `requireUser` uses to resolve the current session
+ * without round-tripping through the wildcard route.
  */
 export type AuthInstance = {
   handler: (request: Request) => Promise<Response>;
+  api: {
+    getSession: (opts: {
+      headers: Headers;
+    }) => Promise<AuthSession | null>;
+  };
+};
+
+export type AuthSession = {
+  user: {
+    id: string;
+    email?: string | null;
+    emailVerified?: boolean;
+    name?: string | null;
+  };
+  session: {
+    id: string;
+    userId: string;
+    expiresAt: Date | string;
+  };
 };
 
 export type CreateAuthResult = {

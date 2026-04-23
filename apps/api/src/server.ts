@@ -13,6 +13,12 @@ import {
 } from "@muralist/core";
 import type { AuthInstance } from "./auth.js";
 import { mongoPlugin, type MongoPluginOptions } from "./db.js";
+import { requireUserPlugin } from "./plugins/requireUser.js";
+import {
+  tierEnforcementPlugin,
+  TierLimitError
+} from "./plugins/tierEnforcement.js";
+import type { TierConfig } from "@muralist/config";
 
 export type BuildServerOptions = {
   /**
@@ -37,6 +43,12 @@ export type BuildServerOptions = {
    * called. Defaults to "/api/auth".
    */
   authBasePath?: string;
+  /**
+   * Tier limits loaded from `config/tiers.yaml`. When omitted, the tier
+   * enforcement plugin is not registered, which is only safe for tests that
+   * don't exercise gated routes.
+   */
+  tierConfig?: TierConfig;
 };
 
 async function toFetchRequest(
@@ -132,7 +144,26 @@ export async function buildServer(opts: BuildServerOptions) {
       const fetchResponse = await authInstance.handler(fetchRequest);
       await pipeFetchResponse(fetchResponse, reply);
     });
+
+    // requireUser depends on a real AuthInstance; register only when auth
+    // is provided so stub-free tests can skip it.
+    await app.register(requireUserPlugin, { auth: opts.auth });
   }
+
+  // 6. Tier enforcement — depends on Mongo. Only register when both Mongo
+  //    and tierConfig are present.
+  if (opts.mongo && opts.tierConfig) {
+    await app.register(tierEnforcementPlugin, { tierConfig: opts.tierConfig });
+  }
+
+  // 7. Centralised error mapping for domain errors like TierLimitError.
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof TierLimitError) {
+      reply.code(error.statusCode).send({ error: error.code });
+      return;
+    }
+    reply.send(error);
+  });
 
   // 6. Existing endpoints — unchanged contract.
   app.get("/health", async () => ({
