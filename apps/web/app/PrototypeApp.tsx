@@ -313,6 +313,8 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   }, []);
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
+    // TODO(ui-round): wire apps/web/app/uploadPipeline.ts + apiClient.ts
+    // to replace this client-only flow with an API-persisting flow.
     const file = event.target.files?.[0];
 
     if (!file) {
