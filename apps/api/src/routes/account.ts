@@ -31,7 +31,9 @@ export const accountRoutes = fp(
   async (app: FastifyInstance) => {
     app.delete(
       "/account",
-      { preHandler: [app.requireUser] },
+      // requireUser first so unauthenticated requests get 401; CSRF after
+      // to block cross-origin authed abuse.
+      { preHandler: [app.requireUser, app.csrfProtection] },
       async (request: FastifyRequest) => {
         if (!request.user) {
           throw new Error("/account reached without user");
@@ -72,7 +74,7 @@ export const accountRoutes = fp(
 
     app.post(
       "/account/delete-cancel",
-      { preHandler: [app.requireUser] },
+      { preHandler: [app.requireUser, app.csrfProtection] },
       async (request: FastifyRequest, reply) => {
         if (!request.user) {
           throw new Error("/account/delete-cancel reached without user");

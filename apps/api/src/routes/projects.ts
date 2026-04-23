@@ -127,11 +127,11 @@ async function loadOwnedProject(
 ): Promise<ProjectDoc & { _id: ObjectId }> {
   const oid = toObjectId(projectId);
   if (!oid) throw new NotFoundError();
-  const doc = await app.mongo.projects.findOne({
-    _id: oid as unknown as ProjectDoc["_id"],
-    userId: userSub
-  } as Filter<ProjectDoc>);
+  const filter: Filter<ProjectDoc> = { _id: oid, userId: userSub };
+  const doc = await app.mongo.projects.findOne(filter);
   if (!doc) throw new NotFoundError();
+  // Mongo always returns a populated `_id` on findOne results; narrow the
+  // optional to required for callers.
   return doc as ProjectDoc & { _id: ObjectId };
 }
 
@@ -146,7 +146,9 @@ export const projectsRoutes = fp<ProjectsRoutesOptions>(
 
     const requireUser = app.requireUser;
     const computeLimits = app.computeLimits;
+    const csrfProtection = app.csrfProtection;
 
+    // Read-only preHandler: auth only, no CSRF needed (safe methods).
     const preAuth = {
       preHandler: requireUser
     };
@@ -154,13 +156,19 @@ export const projectsRoutes = fp<ProjectsRoutesOptions>(
     const withLimits = async (req: FastifyRequest) => {
       await computeLimits(req);
     };
-    const preAuthAndLimitsArray = [requireUser, withLimits];
-    const preAuthAndLimits = { preHandler: preAuthAndLimitsArray };
+    // Mutating preHandler: auth first so unauthenticated requests still get
+    // 401 (not 403), then CSRF double-submit check. `preMutateWithLimits`
+    // additionally runs the tier-limit computation so handlers can call
+    // `app.assertWriteAllowed(request)`.
+    const preMutate = { preHandler: [requireUser, csrfProtection] };
+    const preMutateWithLimits = {
+      preHandler: [requireUser, csrfProtection, withLimits]
+    };
 
     // POST /projects — requires user + limits, applies one-grace-save.
     app.post<{ Body: unknown }>(
       "/projects",
-      preAuthAndLimits,
+      preMutateWithLimits,
       async (request, reply) => {
         const parsed = createProjectSchema.safeParse(request.body);
         if (!parsed.success) {
@@ -328,7 +336,7 @@ export const projectsRoutes = fp<ProjectsRoutesOptions>(
     // PATCH /projects/:id/palette — version-conditional write.
     app.patch<{ Params: { id: string }; Body: unknown }>(
       "/projects/:id/palette",
-      preAuthAndLimits,
+      preMutateWithLimits,
       async (request, reply) => {
         const ifMatch = parseIfMatch(request.headers["if-match"]);
         if (ifMatch === null) throw new PreconditionRequiredError();
@@ -374,7 +382,7 @@ export const projectsRoutes = fp<ProjectsRoutesOptions>(
     // PATCH /projects/:id/image — pass-through validation, bumps version.
     app.patch<{ Params: { id: string }; Body: unknown }>(
       "/projects/:id/image",
-      preAuthAndLimits,
+      preMutateWithLimits,
       async (request, reply) => {
         const parsed = updateImageSchema.safeParse(request.body);
         if (!parsed.success) {
@@ -425,7 +433,7 @@ export const projectsRoutes = fp<ProjectsRoutesOptions>(
     // axis across artifacts.
     app.patch<{ Params: { id: string }; Body: unknown }>(
       "/projects/:id/thumbnail",
-      preAuthAndLimits,
+      preMutateWithLimits,
       async (request, reply) => {
         const parsed = updateThumbnailSchema.safeParse(request.body);
         if (!parsed.success) {
@@ -474,7 +482,7 @@ export const projectsRoutes = fp<ProjectsRoutesOptions>(
     // thumbnail collection so dashboard tiles stay consistent.
     app.patch<{ Params: { id: string }; Body: unknown }>(
       "/projects/:id/metadata",
-      preAuthAndLimits,
+      preMutateWithLimits,
       async (request, reply) => {
         const parsed = updateMetadataSchema.safeParse(request.body);
         if (!parsed.success) {
@@ -525,7 +533,7 @@ export const projectsRoutes = fp<ProjectsRoutesOptions>(
     // DELETE /projects/:id — escape valve: allowed even in read-only mode.
     app.delete<{ Params: { id: string } }>(
       "/projects/:id",
-      preAuthAndLimits,
+      preMutateWithLimits,
       async (request, reply) => {
         app.assertWriteAllowed(request, { allowInReadOnly: true });
 
@@ -565,7 +573,7 @@ export const projectsRoutes = fp<ProjectsRoutesOptions>(
     // writes.
     app.post<{ Params: { id: string } }>(
       "/projects/:id/restore",
-      preAuthAndLimits,
+      preMutateWithLimits,
       async (request, reply) => {
         const doc = await loadOwnedProject(
           app,
@@ -613,7 +621,7 @@ export const projectsRoutes = fp<ProjectsRoutesOptions>(
     // POST /projects/:id/viewed — touches lastViewedAt only. No version bump.
     app.post<{ Params: { id: string } }>(
       "/projects/:id/viewed",
-      preAuth,
+      preMutate,
       async (request, reply) => {
         const doc = await loadOwnedProject(
           app,

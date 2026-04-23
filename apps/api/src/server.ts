@@ -184,7 +184,8 @@ export async function buildServer(opts: BuildServerOptions) {
 
   // 7. Centralised error mapping for domain errors like TierLimitError.
   //    Registered BEFORE product routes so every route inherits it.
-  app.setErrorHandler((error, _request, reply) => {
+  const isProduction = process.env.NODE_ENV === "production";
+  app.setErrorHandler((error, request, reply) => {
     if (error instanceof TierLimitError) {
       reply.code(error.statusCode).send({ error: error.code });
       return;
@@ -192,6 +193,21 @@ export async function buildServer(opts: BuildServerOptions) {
     const mapped = mapProjectsError(error);
     if (mapped) {
       reply.code(mapped.statusCode).send(mapped.body);
+      return;
+    }
+    // @fastify/csrf-protection throws a 403-tagged error (FST_CSRF_*). Pass
+    // those through with their own statusCode so the client sees 403.
+    const errAny = error as { statusCode?: number; code?: string };
+    if (errAny && typeof errAny.statusCode === "number" && errAny.statusCode === 403 && typeof errAny.code === "string" && errAny.code.startsWith("FST_CSRF_")) {
+      reply.code(403).send({ error: errAny.code });
+      return;
+    }
+    // Unknown error path. In production, swallow the stack and respond
+    // generically so we don't leak internals. In dev/test, pass the error
+    // through so the default Fastify handler surfaces the details.
+    if (isProduction) {
+      request.log.error({ err: error }, "unhandled error");
+      reply.code(500).send({ error: "INTERNAL_ERROR" });
       return;
     }
     reply.send(error);
@@ -206,6 +222,18 @@ export async function buildServer(opts: BuildServerOptions) {
       await app.register(projectsRoutes, { uploadLimits: opts.uploadLimits });
     }
   }
+
+  // 9. CSRF token-mint endpoint. Unauthenticated access is fine: the token
+  //    is not a secret, only has to be unguessable by an attacker who cannot
+  //    read the cookie. The client calls this once to seed the `csrf-token`
+  //    cookie + receive the matching token, then echoes the token in the
+  //    `X-CSRF-Token` header on every mutating request. Better Auth endpoints
+  //    are intentionally NOT gated by `csrfProtection` — Better Auth does its
+  //    own origin checks via `trustedOrigins`.
+  app.get("/csrf-token", async (_request, reply) => {
+    const token = reply.generateCsrf();
+    return { token };
+  });
 
   // 6. Existing endpoints — unchanged contract.
   app.get("/health", async () => ({

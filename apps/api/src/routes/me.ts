@@ -112,7 +112,9 @@ export const meRoutes = fp(
     app.patch(
       "/me/pro-settings",
       {
-        preHandler: [app.requireUser]
+        // requireUser before csrfProtection so unauthenticated requests get
+        // 401 rather than 403; CSRF is about cross-origin authed abuse.
+        preHandler: [app.requireUser, app.csrfProtection]
       },
       async (request, reply) => {
         if (!request.user) {
