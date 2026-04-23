@@ -33,7 +33,10 @@ services:
       failure_threshold: 3
     envs:
       - key: NODE_ENV
-        scope: RUN_AND_BUILD_TIME
+        # RUN_TIME only — if we set this at build time, `npm ci` skips
+        # devDependencies (typescript, tsx) and the workspace builds fail
+        # with `sh: 1: tsc: not found`.
+        scope: RUN_TIME
         value: production
       - key: MONGO_DB_NAME
         scope: RUN_TIME
