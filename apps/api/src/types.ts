@@ -96,9 +96,7 @@ export type SessionUser = {
   sessionId: string;
 };
 
-export type LimitState = {
-  activeProjectCount: number;
-  projectLimit: number | null;
-  atLimit: boolean;
-  overLimit: boolean;
-};
+// LimitState lives in plugins/tierEnforcement.ts with the richer shape that
+// includes tier + effectiveTier. Import from there to avoid divergent
+// definitions.
+export type { LimitState } from "./plugins/tierEnforcement.js";

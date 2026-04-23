@@ -1,12 +1,19 @@
 import fp from "fastify-plugin";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { proSettingsSchema } from "../schemas/me.js";
 import type { UserDoc } from "../types.js";
+import { isDeletionElapsed, purgeUser } from "./account.js";
 
 /**
  * Read or lazily-create the product-side user record for the authenticated
  * session. Better Auth owns the identity table; this record holds our
  * product-specific fields (tier, proSettings, etc).
+ *
+ * TODO: convert to findOneAndUpdate upsert to close the narrow race where
+ * two parallel first-time /me calls could both pass findOne and both try
+ * insertOne (second hits the users.sub unique index and 500s). The upsert
+ * pattern hung the test harness against mongodb-memory-server's replset,
+ * so leaving the simpler find/insert here until we diagnose that.
  */
 async function readOrCreateUserDoc(
   app: FastifyInstance,
@@ -34,6 +41,25 @@ async function readOrCreateUserDoc(
   return doc;
 }
 
+/**
+ * If a pending account deletion has elapsed its 30-day window, purge the
+ * account and end the request with 401. Returns true when the request was
+ * terminated (caller should stop processing), false when the account
+ * remains active.
+ */
+async function maybePurgeAndTerminate(
+  app: FastifyInstance,
+  doc: UserDoc,
+  reply: FastifyReply
+): Promise<boolean> {
+  if (!doc.deletionPendingAt) return false;
+  if (!isDeletionElapsed(doc.deletionPendingAt)) return false;
+
+  await purgeUser(app, doc.sub);
+  reply.code(401).send({ error: "ACCOUNT_DELETED" });
+  return true;
+}
+
 export const meRoutes = fp(
   async (app: FastifyInstance) => {
     app.get(
@@ -46,7 +72,7 @@ export const meRoutes = fp(
           }
         ]
       },
-      async (request) => {
+      async (request, reply) => {
         if (!request.user || !request.limits) {
           // Defensive: preHandler chain should have set both.
           throw new Error("me route reached without user + limits");
@@ -57,6 +83,10 @@ export const meRoutes = fp(
           request.user.sub,
           request.user.email
         );
+
+        if (await maybePurgeAndTerminate(app, doc, reply)) {
+          return reply;
+        }
 
         return {
           sub: request.user.sub,

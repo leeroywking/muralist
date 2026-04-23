@@ -88,13 +88,29 @@ async function pipeFetchResponse(
   reply: FastifyReply
 ): Promise<void> {
   reply.status(response.status);
+
+  // Set-Cookie needs special handling. Fetch Headers comma-collapses on
+  // default iteration, but cookie Expires values contain literal commas
+  // (e.g. `Expires=Wed, 09 Jun 2024 …`), so a single comma-joined value
+  // written once corrupts both cookies when Better Auth issues two
+  // (session + CSRF) in the same response. `getSetCookie()` returns each
+  // cookie as a separate entry; we forward them individually.
+  const maybeGetSetCookie = (
+    response.headers as unknown as {
+      getSetCookie?: () => string[];
+    }
+  ).getSetCookie;
+  if (typeof maybeGetSetCookie === "function") {
+    for (const cookie of maybeGetSetCookie.call(response.headers)) {
+      reply.header("set-cookie", cookie);
+    }
+  }
+
   response.headers.forEach((value, key) => {
-    // Better Auth issues multiple Set-Cookie headers via Headers.append; the
-    // Fetch Headers spec collapses them on iteration via a comma, but
-    // Fastify's reply.header honors multi-value appends when called
-    // repeatedly, so we forward each header independently.
+    if (key.toLowerCase() === "set-cookie") return; // handled above
     reply.header(key, value);
   });
+
   const buf = Buffer.from(await response.arrayBuffer());
   await reply.send(buf);
 }
