@@ -18,7 +18,10 @@ services:
       branch: feat/persistence-auth-backend
       deploy_on_push: true
     source_dir: /
-    build_command: npm ci && npm run build --workspace @muralist/config && npm run build --workspace @muralist/core && npm run build --workspace @muralist/api
+    # Explicitly --include=dev so TypeScript + tsx (devDeps) are installed
+    # for the workspace builds. DO App Platform's buildpack defaults to
+    # `npm ci --production` regardless of the declared NODE_ENV scope.
+    build_command: npm ci --include=dev && npm run build --workspace @muralist/config && npm run build --workspace @muralist/core && npm run build --workspace @muralist/api
     run_command: npm run start --workspace @muralist/api
     environment_slug: node-js
     instance_size_slug: basic-xxs
