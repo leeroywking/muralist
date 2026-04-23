@@ -21,7 +21,8 @@ import {
 import { meRoutes } from "./routes/me.js";
 import { accountRoutes } from "./routes/account.js";
 import { exportRoutes } from "./routes/export.js";
-import type { TierConfig } from "@muralist/config";
+import { projectsRoutes, mapProjectsError } from "./routes/projects.js";
+import type { TierConfig, UploadLimits } from "@muralist/config";
 
 export type BuildServerOptions = {
   /**
@@ -52,6 +53,12 @@ export type BuildServerOptions = {
    * don't exercise gated routes.
    */
   tierConfig?: TierConfig;
+  /**
+   * Upload size/type caps loaded from `config/upload-limits.yaml`. Required
+   * for the projects CRUD routes; when omitted those routes are not
+   * registered.
+   */
+  uploadLimits?: UploadLimits;
 };
 
 async function toFetchRequest(
@@ -159,21 +166,30 @@ export async function buildServer(opts: BuildServerOptions) {
     await app.register(tierEnforcementPlugin, { tierConfig: opts.tierConfig });
   }
 
-  // 7. Product routes — only wire when the prerequisites are present.
-  if (opts.mongo && opts.auth && opts.tierConfig) {
-    await app.register(meRoutes);
-    await app.register(accountRoutes);
-    await app.register(exportRoutes);
-  }
-
-  // 8. Centralised error mapping for domain errors like TierLimitError.
+  // 7. Centralised error mapping for domain errors like TierLimitError.
+  //    Registered BEFORE product routes so every route inherits it.
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof TierLimitError) {
       reply.code(error.statusCode).send({ error: error.code });
       return;
     }
+    const mapped = mapProjectsError(error);
+    if (mapped) {
+      reply.code(mapped.statusCode).send(mapped.body);
+      return;
+    }
     reply.send(error);
   });
+
+  // 8. Product routes — only wire when the prerequisites are present.
+  if (opts.mongo && opts.auth && opts.tierConfig) {
+    await app.register(meRoutes);
+    await app.register(accountRoutes);
+    await app.register(exportRoutes);
+    if (opts.uploadLimits) {
+      await app.register(projectsRoutes, { uploadLimits: opts.uploadLimits });
+    }
+  }
 
   // 6. Existing endpoints — unchanged contract.
   app.get("/health", async () => ({

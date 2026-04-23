@@ -1,4 +1,5 @@
 import { MongoClient } from "mongodb";
+import { loadTierConfig, loadUploadLimits } from "@muralist/config";
 import { createAuth, type OAuthCredentials } from "./auth.js";
 import { buildServer } from "./server.js";
 
@@ -79,10 +80,17 @@ try {
     }`
   );
 
+  const [tierConfig, uploadLimits] = await Promise.all([
+    loadTierConfig(),
+    loadUploadLimits()
+  ]);
+
   const app = await buildServer({
     appBaseURL: env.APP_BASE_URL,
     mongo: { uri: env.MONGO_URI, dbName: env.MONGO_DB_NAME },
-    auth
+    auth,
+    tierConfig,
+    uploadLimits
   });
 
   app.addHook("onClose", async () => {
