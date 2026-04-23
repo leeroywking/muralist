@@ -38,6 +38,14 @@ export function validateImagePayload(
     return { ok: false, reason: "INVALID_BASE64" };
   }
 
+  // Fast-fail on obviously-too-small payloads: 16 base64 chars decode to at
+  // most 12 bytes, which is the minimum for a valid WebP RIFF header. Skip
+  // the full regex + buffer allocation when the payload can't possibly be a
+  // real image.
+  if (base64.length < 16) {
+    return { ok: false, reason: "BAD_MAGIC_BYTES" };
+  }
+
   if (!BASE64_REGEX.test(base64)) {
     return { ok: false, reason: "INVALID_BASE64" };
   }

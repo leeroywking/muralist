@@ -26,6 +26,18 @@ export type UserDoc = {
   activeProjectCount: number;
   atLimit: boolean;
   overLimit: boolean;
+  /**
+   * Populated list of the user's linked OAuth accounts.
+   *
+   * DEFERRED: this field is declared but not wired. Better Auth owns the
+   * canonical `account` collection; mirroring it here would require a
+   * `databaseHooks.account.create.after` hook to append on every
+   * provider-link, plus a delete hook to prune. Until that hook lands, the
+   * array stays empty and `/me.linkedProviders` reads as `[]`. Consumers
+   * (Settings view) should treat this field as a UX enhancement, not a
+   * source of truth — the authoritative linking state lives in
+   * `better-auth.account`. Tracked in docs/RETENTION_POLICY.md.
+   */
   providers: LinkedProvider[];
   proSettings: ProSettings;
   createdAt: Date;

@@ -83,6 +83,12 @@ test("rejects payload with truncated magic bytes as BAD_MAGIC_BYTES", () => {
   assert.deepEqual(result, { ok: false, reason: "BAD_MAGIC_BYTES" });
 });
 
+test("fast-fails base64 under 16 chars as BAD_MAGIC_BYTES", () => {
+  // 12 chars decodes to at most 9 bytes — can't be a real image.
+  const result = validateImagePayload("aGVsbG93b3Js", "sanitizedImage", limits);
+  assert.deepEqual(result, { ok: false, reason: "BAD_MAGIC_BYTES" });
+});
+
 test("rejects PNG-like payload as BAD_MAGIC_BYTES (no match for JPEG or WebP)", () => {
   // PNG magic: 89 50 4E 47 0D 0A 1A 0A
   const png = Buffer.from([
@@ -120,11 +126,11 @@ test("rejects format absent from the allowlist even if magic matches", () => {
 });
 
 test("rejects base64 with stripped padding that does not round-trip", () => {
-  // Construct invalid base64 by including ambiguous whitespace / extra chars
-  // that the regex accepts character-wise but decode path rejects. Here we
-  // supply a payload whose re-encoded form won't match stripped-input form.
-  const invalid = "AAA"; // length 3, legal chars, but decodes to 2 bytes that
-                         // re-encode as "AAA=" (with padding), not matching.
+  // Use a payload that is (a) >= 16 chars so it clears the tiny-payload
+  // fast-fail, (b) legal per the character regex, and (c) fails the
+  // re-encode round-trip because its length % 4 !== 0 after a single
+  // trailing non-base64 byte's-worth of misalignment.
+  const invalid = "AAAAAAAAAAAAAAAAA"; // 17 chars, length %4 === 1
   const result = validateImagePayload(invalid, "sanitizedImage", limits);
   assert.deepEqual(result, { ok: false, reason: "INVALID_BASE64" });
 });

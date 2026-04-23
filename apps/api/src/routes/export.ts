@@ -59,6 +59,12 @@ export const exportRoutes = fp(
             `attachment; filename="muralist-export-${userId}.json"`
           );
 
+        // TODO: stream this response. Today the full payload (including
+        // base64-encoded sanitized images + thumbnails for every project) is
+        // assembled in memory and serialized by Fastify in one pass. Safe at
+        // free tier (3 projects × ~25KB image + ~8KB thumb ≈ 100KB) but grows
+        // linearly with the paid tier's project cap. Convert to
+        // `reply.raw.write(chunk)` with a JSON streamer when that matters.
         return payload;
       }
     );
