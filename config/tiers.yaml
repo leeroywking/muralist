@@ -1,0 +1,18 @@
+# Subscription tier definitions.
+# Kept config-driven so limit changes are a config edit, not a code edit.
+# `projectLimit: null` means unlimited on that tier.
+# Non-subscription `one_time.windowDays` is left null until the billing-design
+# round picks a value; callers treat null as "one-time purchase not available yet."
+
+version: 1
+tiers:
+  - id: free
+    projectLimit: 3
+    subscriptionOptions: []
+
+  - id: paid
+    projectLimit: null
+    subscriptionOptions:
+      - kind: recurring
+      - kind: one_time
+        windowDays: null

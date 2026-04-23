@@ -3,6 +3,25 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 
+export {
+  loadTierConfig,
+  validateTierConfig,
+  resolveTier,
+  type TierId,
+  type TierDefinition,
+  type TierConfig,
+  type SubscriptionOption,
+  type SubscriptionOptionRecurring,
+  type SubscriptionOptionOneTime
+} from "./tiers.js";
+
+export {
+  loadUploadLimits,
+  validateUploadLimits,
+  type UploadLimits,
+  type UploadArtifactLimits
+} from "./uploadLimits.js";
+
 export type PaintBrandFinish = {
   id: string;
   display_name: string;

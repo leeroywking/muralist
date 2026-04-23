@@ -1,0 +1,25 @@
+# Client-side sanitization defaults and server-side pass-through caps.
+# The client downsamples and re-encodes to these targets before upload;
+# the server validates magic bytes, Content-Type, and base64 length
+# against the caps below but never decodes the image.
+#
+# Sanitized image: reduced working image persisted with the project,
+# used to regenerate the maquette PDF's flattened preview on re-open.
+# Thumbnail: small dashboard-tile image.
+#
+# Mongo BSON document cap is 16 MB; our caps are three orders of magnitude
+# below that. Size caps are UX-driven (load speed, per-user storage cost),
+# not DB-driven.
+
+version: 1
+sanitizedImage:
+  maxBytes: 25600          # ~25 KB
+  longEdge: 640            # px
+  jpegQuality: 0.8
+thumbnail:
+  maxBytes: 8192           # ~8 KB
+  longEdge: 192            # px
+  jpegQuality: 0.8
+contentTypeAllowlist:
+  - image/jpeg
+  - image/webp
