@@ -1,4 +1,4 @@
-import type { Binary } from "mongodb";
+import type { Binary, ObjectId } from "mongodb";
 
 export type TierId = "free" | "paid";
 export type SubscriptionStatus = "active" | "past_due" | "canceled" | "none";
@@ -18,7 +18,7 @@ export type ProSettings = {
 };
 
 export type UserDoc = {
-  _id?: unknown;
+  _id?: ObjectId;
   sub: string;
   email?: string;
   tier: TierId;
@@ -65,7 +65,7 @@ export type ProjectMetadata = {
 };
 
 export type ProjectDoc = {
-  _id?: unknown;
+  _id?: ObjectId;
   userId: string;
   name: string;
   palette: PaletteJson;
@@ -80,7 +80,7 @@ export type ProjectDoc = {
 };
 
 export type ThumbnailDoc = {
-  _id?: unknown;
+  _id?: ObjectId;
   projectId: string;
   userId: string;
   thumbnail: Binary;

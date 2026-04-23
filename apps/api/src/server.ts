@@ -18,6 +18,7 @@ import {
   tierEnforcementPlugin,
   TierLimitError
 } from "./plugins/tierEnforcement.js";
+import { meRoutes } from "./routes/me.js";
 import type { TierConfig } from "@muralist/config";
 
 export type BuildServerOptions = {
@@ -156,7 +157,12 @@ export async function buildServer(opts: BuildServerOptions) {
     await app.register(tierEnforcementPlugin, { tierConfig: opts.tierConfig });
   }
 
-  // 7. Centralised error mapping for domain errors like TierLimitError.
+  // 7. Product routes — only wire when the prerequisites are present.
+  if (opts.mongo && opts.auth && opts.tierConfig) {
+    await app.register(meRoutes);
+  }
+
+  // 8. Centralised error mapping for domain errors like TierLimitError.
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof TierLimitError) {
       reply.code(error.statusCode).send({ error: error.code });
