@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildServer } from "../src/server.js";
 
+const TEST_BASE_URL = "http://localhost:3000";
+
 test("health endpoint responds", async () => {
-  const app = await buildServer();
+  const app = await buildServer({ appBaseURL: TEST_BASE_URL });
   const response = await app.inject({
     method: "GET",
     url: "/health"
@@ -19,7 +21,7 @@ test("health endpoint responds", async () => {
 });
 
 test("brand catalog endpoint returns seeded brands", async () => {
-  const app = await buildServer();
+  const app = await buildServer({ appBaseURL: TEST_BASE_URL });
   const response = await app.inject({
     method: "GET",
     url: "/api/paint-brands"
@@ -33,7 +35,7 @@ test("brand catalog endpoint returns seeded brands", async () => {
 });
 
 test("estimate endpoint computes gallons from a brand profile", async () => {
-  const app = await buildServer();
+  const app = await buildServer({ appBaseURL: TEST_BASE_URL });
   const response = await app.inject({
     method: "POST",
     url: "/api/estimate",

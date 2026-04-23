@@ -1,21 +1,140 @@
+import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
-import Fastify from "fastify";
+import csrf from "@fastify/csrf-protection";
+import Fastify, {
+  type FastifyReply,
+  type FastifyRequest
+} from "fastify";
 import { loadPaintBrandCatalog } from "@muralist/config";
 import {
   estimatePaintRequirement,
   getAuthCapabilities,
   type EstimateInput
 } from "@muralist/core";
+import type { AuthInstance } from "./auth.js";
+import { mongoPlugin, type MongoPluginOptions } from "./db.js";
 
-export async function buildServer() {
+export type BuildServerOptions = {
+  /**
+   * Public base URL of the web app. Used as the sole CORS origin and echoed
+   * to Better Auth as a trusted origin. Required — we do not fall back to
+   * `origin: true`.
+   */
+  appBaseURL: string;
+  /**
+   * Mongo connection info. When omitted the Mongo plugin is not registered,
+   * which is useful for targeted tests that inject a stub auth instance.
+   */
+  mongo?: MongoPluginOptions;
+  /**
+   * Pre-built Better Auth instance. Injected rather than constructed here so
+   * the server can be tested against a stub (`{ handler }`) without spinning
+   * up OAuth config.
+   */
+  auth?: AuthInstance;
+  /**
+   * Base path Better Auth is mounted on. Must match how `createAuth` was
+   * called. Defaults to "/api/auth".
+   */
+  authBasePath?: string;
+};
+
+async function toFetchRequest(
+  request: FastifyRequest,
+  appBaseURL: string
+): Promise<Request> {
+  const url = new URL(request.url, appBaseURL);
+
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(request.headers)) {
+    if (Array.isArray(value)) {
+      for (const v of value) headers.append(key, v);
+    } else if (typeof value === "string") {
+      headers.set(key, value);
+    }
+  }
+
+  const method = request.method.toUpperCase();
+  const hasBody = method !== "GET" && method !== "HEAD";
+  const body = hasBody ? JSON.stringify(request.body ?? {}) : undefined;
+
+  return new Request(url.toString(), { method, headers, body });
+}
+
+async function pipeFetchResponse(
+  response: Response,
+  reply: FastifyReply
+): Promise<void> {
+  reply.status(response.status);
+  response.headers.forEach((value, key) => {
+    // Better Auth issues multiple Set-Cookie headers via Headers.append; the
+    // Fetch Headers spec collapses them on iteration via a comma, but
+    // Fastify's reply.header honors multi-value appends when called
+    // repeatedly, so we forward each header independently.
+    reply.header(key, value);
+  });
+  const buf = Buffer.from(await response.arrayBuffer());
+  await reply.send(buf);
+}
+
+export async function buildServer(opts: BuildServerOptions) {
   const app = Fastify({
     logger: false
   });
 
-  await app.register(cors, {
-    origin: true
+  // 1. Cookie parser — required before CSRF (which stores its token in a cookie)
+  //    and before Better Auth (which reads/writes session cookies).
+  await app.register(cookie);
+
+  // 2. CSRF double-submit: cookie `csrf-token` (readable by JS), header
+  //    `X-CSRF-Token` on mutating requests. Only applied to routes that opt
+  //    into `preHandler: app.csrfProtection`; Better Auth's own endpoints run
+  //    their own origin checks and are excluded.
+  await app.register(csrf, {
+    cookieKey: "csrf-token",
+    cookieOpts: {
+      path: "/",
+      sameSite: "lax",
+      secure: true,
+      // Deliberately NOT httpOnly: the client must read the cookie to echo
+      // it in the X-CSRF-Token header (double-submit pattern, per plan §3 C).
+      httpOnly: false
+    },
+    getToken: (req: FastifyRequest) => {
+      const headerValue = req.headers["x-csrf-token"];
+      if (Array.isArray(headerValue)) return headerValue[0];
+      return headerValue;
+    }
   });
 
+  // 3. CORS — scoped to APP_BASE_URL only. DELIBERATE CHANGE from the prior
+  //    `origin: true`. Required by docs/SECURITY_REVIEW.md and plan step 20.
+  await app.register(cors, {
+    origin: opts.appBaseURL,
+    credentials: true,
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "X-CSRF-Token", "If-Match"]
+  });
+
+  // 4. Mongo connection + collection bootstrap.
+  if (opts.mongo) {
+    await app.register(mongoPlugin, opts.mongo);
+  }
+
+  // 5. Better Auth handlers under /api/auth/*. We translate Fastify's
+  //    req/reply to/from the Fetch API because Better Auth exposes a
+  //    Web Fetch handler (`handler(request: Request) => Promise<Response>`).
+  const basePath = opts.authBasePath ?? "/api/auth";
+  if (opts.auth) {
+    const authInstance = opts.auth;
+    app.all(`${basePath}/*`, async (request, reply) => {
+      const fetchRequest = await toFetchRequest(request, opts.appBaseURL);
+      const fetchResponse = await authInstance.handler(fetchRequest);
+      await pipeFetchResponse(fetchResponse, reply);
+    });
+  }
+
+  // 6. Existing endpoints — unchanged contract.
   app.get("/health", async () => ({
     ok: true,
     service: "muralist-api"
@@ -41,4 +160,3 @@ export async function buildServer() {
 
   return app;
 }
-
