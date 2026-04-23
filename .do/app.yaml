@@ -1,0 +1,93 @@
+# DigitalOcean App Platform spec for the Muralist API.
+#
+# Create / update via:
+#   doctl apps create --spec .do/app.yaml
+#   doctl apps update <app-id> --spec .do/app.yaml
+#
+# Secrets (MONGO_URI, BETTER_AUTH_SECRET, OAuth client/secret pairs) are NOT
+# in this file — they're set on the app after creation via:
+#   doctl apps config set <app-id> MONGO_URI="..." --encrypted
+# or through the DO console. Only non-secret defaults live here.
+
+name: muralist-api
+region: nyc
+services:
+  - name: api
+    github:
+      repo: leeroywking/muralist
+      branch: feat/persistence-auth-backend
+      deploy_on_push: true
+    source_dir: /
+    build_command: npm ci && npm run build --workspace @muralist/config && npm run build --workspace @muralist/core && npm run build --workspace @muralist/api
+    run_command: npm run start --workspace @muralist/api
+    environment_slug: node-js
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    http_port: 4000
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 10
+      period_seconds: 10
+      timeout_seconds: 3
+      success_threshold: 1
+      failure_threshold: 3
+    envs:
+      - key: NODE_ENV
+        scope: RUN_AND_BUILD_TIME
+        value: production
+      - key: MONGO_DB_NAME
+        scope: RUN_TIME
+        value: muralist
+      - key: PORT
+        scope: RUN_TIME
+        value: "4000"
+      # Secrets below are placeholders — set real values via:
+      #   doctl apps update <app-id> --spec .do/app.yaml  (WON'T set secrets)
+      #   doctl apps config set <app-id> KEY=VALUE --encrypted
+      - key: MONGO_URI
+        scope: RUN_TIME
+        type: SECRET
+      - key: BETTER_AUTH_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: APP_BASE_URL
+        scope: RUN_AND_BUILD_TIME
+        # Set to the app's actual ingress URL after first deploy. Defaults to
+        # the bound domain below. Override via `doctl apps config set` if you
+        # front this with Cloudflare behind a custom domain.
+        value: ${APP_URL}
+      # OAuth provider credentials — wire when ready (see task #17).
+      - key: GOOGLE_CLIENT_ID
+        scope: RUN_TIME
+        type: SECRET
+      - key: GOOGLE_CLIENT_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: APPLE_CLIENT_ID
+        scope: RUN_TIME
+        type: SECRET
+      - key: APPLE_CLIENT_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: FACEBOOK_CLIENT_ID
+        scope: RUN_TIME
+        type: SECRET
+      - key: FACEBOOK_CLIENT_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: ADOBE_CLIENT_ID
+        scope: RUN_TIME
+        type: SECRET
+      - key: ADOBE_CLIENT_SECRET
+        scope: RUN_TIME
+        type: SECRET
+
+# Notes:
+# - Size basic-xxs is $5/mo fixed tier: 1 vCPU shared / 512 MiB RAM, single
+#   instance, 50 GiB outbound bandwidth included.
+# - Region nyc matches the Mongo cluster region (nyc3) to keep latency low
+#   and avoid cross-region egress charges.
+# - deploy_on_push: true auto-builds on every push to feat/persistence-auth-backend.
+#   Change to `branch: main` after the PR merges.
+# - The Mongo cluster's trusted sources list needs this app added once the
+#   app exists (`doctl databases firewalls append`).
