@@ -6,6 +6,7 @@ import { MongoClient } from "mongodb";
 import { loadTierConfig, type TierConfig } from "@muralist/config";
 import { buildServer } from "../src/server.js";
 import type { AuthInstance, AuthSession } from "../src/auth.js";
+import { mutatingInject } from "./_csrfHelper.js";
 
 if (!globalThis.crypto) {
   (globalThis as unknown as { crypto: Crypto }).crypto = webcrypto as Crypto;
@@ -121,7 +122,7 @@ test("GET /me reflects overLimit=true when activeProjectCount > limit", async ()
 test("PATCH /me/pro-settings updates the user doc and returns 204", async () => {
   const { app, uri, teardown } = await harness(baseSession);
 
-  const response = await app.inject({
+  const response = await mutatingInject(app, {
     method: "PATCH",
     url: "/me/pro-settings",
     payload: {
@@ -150,7 +151,7 @@ test("PATCH /me/pro-settings updates the user doc and returns 204", async () => 
 test("PATCH /me/pro-settings rejects invalid payloads with 400", async () => {
   const { app, teardown } = await harness(baseSession);
 
-  const response = await app.inject({
+  const response = await mutatingInject(app, {
     method: "PATCH",
     url: "/me/pro-settings",
     payload: {
@@ -166,6 +167,9 @@ test("PATCH /me/pro-settings rejects invalid payloads with 400", async () => {
 test("PATCH /me/pro-settings requires an authenticated session", async () => {
   const { app, teardown } = await harness(null);
 
+  // No mutatingInject here: the test specifically exercises the unauthed
+  // path. requireUser runs before csrfProtection in the preHandler chain,
+  // so a missing CSRF token does NOT mask the 401.
   const response = await app.inject({
     method: "PATCH",
     url: "/me/pro-settings",
@@ -180,7 +184,7 @@ test("PATCH /me/pro-settings merges with existing settings instead of replacing"
   const { app, uri, teardown } = await harness(baseSession);
 
   // First PATCH seeds two fields.
-  await app.inject({
+  await mutatingInject(app, {
     method: "PATCH",
     url: "/me/pro-settings",
     payload: {
@@ -190,7 +194,7 @@ test("PATCH /me/pro-settings merges with existing settings instead of replacing"
   });
 
   // Second PATCH updates only one field; the other two should remain.
-  await app.inject({
+  await mutatingInject(app, {
     method: "PATCH",
     url: "/me/pro-settings",
     payload: { mixCoveragePercent: 10 }

@@ -6,6 +6,7 @@ import { MongoClient, Binary } from "mongodb";
 import { loadTierConfig, type TierConfig } from "@muralist/config";
 import { buildServer } from "../src/server.js";
 import type { AuthInstance, AuthSession } from "../src/auth.js";
+import { mutatingInject } from "./_csrfHelper.js";
 
 if (!globalThis.crypto) {
   (globalThis as unknown as { crypto: Crypto }).crypto = webcrypto as Crypto;
@@ -53,6 +54,8 @@ const session: AuthSession = {
 
 test("DELETE /account returns 401 when unauthenticated", async () => {
   const { app, teardown } = await harness(null);
+  // No CSRF seeding: requireUser runs first, so the unauth path still 401s
+  // without a token.
   const response = await app.inject({ method: "DELETE", url: "/account" });
   assert.equal(response.statusCode, 401);
   await teardown();
@@ -62,7 +65,10 @@ test("DELETE /account sets deletionPendingAt and returns a 30-day deletionAt", a
   const { app, uri, teardown } = await harness(session);
 
   const before = Date.now();
-  const response = await app.inject({ method: "DELETE", url: "/account" });
+  const response = await mutatingInject(app, {
+    method: "DELETE",
+    url: "/account"
+  });
   assert.equal(response.statusCode, 200);
   const body = response.json();
 
@@ -90,8 +96,8 @@ test("DELETE /account sets deletionPendingAt and returns a 30-day deletionAt", a
 test("POST /account/delete-cancel clears deletionPendingAt", async () => {
   const { app, uri, teardown } = await harness(session);
 
-  await app.inject({ method: "DELETE", url: "/account" });
-  const cancel = await app.inject({
+  await mutatingInject(app, { method: "DELETE", url: "/account" });
+  const cancel = await mutatingInject(app, {
     method: "POST",
     url: "/account/delete-cancel"
   });

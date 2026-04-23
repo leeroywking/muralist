@@ -58,6 +58,72 @@ test("buildServer accepts a stub auth instance and keeps capabilities endpoint",
   await app.close();
 });
 
+test("Better Auth rejects sign-in requests whose Origin is not in trustedOrigins", async () => {
+  // Regression guard for plan §3 "already-answered" item: `trustedOrigins:
+  // [appBaseURL]` must reject cross-origin requests at Better Auth's layer.
+  // Better Auth's origin check only runs for mutating requests that carry a
+  // Cookie header (or force-validate), so the test body mimics a browser's
+  // cross-origin POST: `Cookie` present + `Origin` mismatched.
+  const replSet = await MongoMemoryReplSet.create({
+    replSet: { count: 1 }
+  });
+  const uri = replSet.getUri();
+  const dbName = "muralist_test_origin";
+
+  const client = new MongoClient(uri);
+  await client.connect();
+
+  try {
+    const { auth } = createAuth({
+      client,
+      dbName,
+      secret: "test-secret-at-least-32-chars-long-xxxxxxxxxx",
+      appBaseURL: TEST_BASE_URL,
+      // No providers: we're only exercising the middleware. The `/sign-in`
+      // handler runs its preHandler (including originCheck) before it
+      // complains about a missing provider config.
+      providers: {}
+    });
+
+    const app = await buildServer({
+      appBaseURL: TEST_BASE_URL,
+      mongo: { uri, dbName },
+      auth
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/auth/sign-in/social",
+      headers: {
+        origin: "https://evil.example.com",
+        cookie: "bogus=1"
+      },
+      payload: { provider: "google" }
+    });
+
+    // Better Auth raises FORBIDDEN (HTTP 403) with `INVALID_ORIGIN` when the
+    // Origin header is present but not in trustedOrigins. Accept either
+    // INVALID_ORIGIN or MISSING_OR_NULL_ORIGIN depending on how the version
+    // frames the error — the behaviour we care about is "not 200".
+    assert.equal(
+      response.statusCode,
+      403,
+      `expected 403 from cross-origin sign-in, got ${response.statusCode} body=${response.body}`
+    );
+    const body = response.json() as { code?: string; message?: string };
+    assert.ok(
+      (body.code && /ORIGIN/i.test(body.code)) ||
+        (body.message && /origin/i.test(body.message)),
+      `expected origin-related error, got ${JSON.stringify(body)}`
+    );
+
+    await app.close();
+  } finally {
+    await client.close();
+    await replSet.stop();
+  }
+});
+
 test("Better Auth get-session endpoint returns null when unauthenticated", async () => {
   // Better Auth's Mongo adapter enables transactions by default; the memory
   // server must be a replica set (single-node) for transactions to work.

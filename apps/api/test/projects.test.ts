@@ -11,6 +11,7 @@ import {
 } from "@muralist/config";
 import { buildServer } from "../src/server.js";
 import type { AuthInstance, AuthSession } from "../src/auth.js";
+import { mutatingInject } from "./_csrfHelper.js";
 
 if (!globalThis.crypto) {
   (globalThis as unknown as { crypto: Crypto }).crypto = webcrypto as Crypto;
@@ -106,7 +107,7 @@ test("POST /projects creates 3 projects, 4th via grace-save, 5th rejected 403", 
   const { app, teardown } = await setupHarness(sessionFor("tier-test"));
 
   for (let i = 1; i <= 3; i++) {
-    const response = await app.inject({
+    const response = await mutatingInject(app, {
       method: "POST",
       url: "/projects",
       payload: createPayload(`P${i}`)
@@ -115,7 +116,7 @@ test("POST /projects creates 3 projects, 4th via grace-save, 5th rejected 403", 
   }
 
   // 4th — one-grace-save: count === 3 === limit, allowed.
-  const fourth = await app.inject({
+  const fourth = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("P4")
@@ -123,7 +124,7 @@ test("POST /projects creates 3 projects, 4th via grace-save, 5th rejected 403", 
   assert.equal(fourth.statusCode, 201, `grace save body=${fourth.body}`);
 
   // 5th — now overLimit (count=4 > 3), rejected.
-  const fifth = await app.inject({
+  const fifth = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("P5")
@@ -137,7 +138,7 @@ test("POST /projects creates 3 projects, 4th via grace-save, 5th rejected 403", 
 test("GET /projects returns tile rows without image bytes but with thumbnail", async () => {
   const { app, teardown } = await setupHarness(sessionFor("list-user"));
 
-  const created = await app.inject({
+  const created = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("Tile One")
@@ -162,7 +163,7 @@ test("GET /projects returns tile rows without image bytes but with thumbnail", a
 test("GET /projects/:id returns full doc with base64 sanitizedImage", async () => {
   const { app, teardown } = await setupHarness(sessionFor("get-one"));
 
-  const created = await app.inject({
+  const created = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("Full")
@@ -185,7 +186,7 @@ test("GET /projects/:id returns 404 for another user's project", async () => {
   const ownerSession = sessionFor("owner-abc");
   const { app, teardown, uri } = await setupHarness(ownerSession);
 
-  const created = await app.inject({
+  const created = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("Secret")
@@ -217,14 +218,14 @@ test("GET /projects/:id returns 404 for another user's project", async () => {
 test("PATCH /projects/:id/palette without If-Match returns 428", async () => {
   const { app, teardown } = await setupHarness(sessionFor("pat-428"));
 
-  const created = await app.inject({
+  const created = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("P")
   });
   const { id } = created.json() as { id: string };
 
-  const response = await app.inject({
+  const response = await mutatingInject(app, {
     method: "PATCH",
     url: `/projects/${id}/palette`,
     payload: { palette: samplePalette() }
@@ -238,14 +239,14 @@ test("PATCH /projects/:id/palette without If-Match returns 428", async () => {
 test("PATCH /projects/:id/palette with stale If-Match returns 409", async () => {
   const { app, teardown } = await setupHarness(sessionFor("pat-409"));
 
-  const created = await app.inject({
+  const created = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("P")
   });
   const { id } = created.json() as { id: string };
 
-  const response = await app.inject({
+  const response = await mutatingInject(app, {
     method: "PATCH",
     url: `/projects/${id}/palette`,
     headers: { "if-match": "99" },
@@ -260,14 +261,14 @@ test("PATCH /projects/:id/palette with stale If-Match returns 409", async () => 
 test("PATCH /projects/:id/palette with current If-Match succeeds and bumps version", async () => {
   const { app, teardown } = await setupHarness(sessionFor("pat-ok"));
 
-  const created = await app.inject({
+  const created = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("P")
   });
   const { id } = created.json() as { id: string; version: number };
 
-  const response = await app.inject({
+  const response = await mutatingInject(app, {
     method: "PATCH",
     url: `/projects/${id}/palette`,
     headers: { "if-match": "1" },
@@ -283,19 +284,20 @@ test("PATCH /projects/:id/palette with current If-Match succeeds and bumps versi
 test("PATCH /projects/:id/image with bad base64 returns 400 INVALID_BASE64", async () => {
   const { app, teardown } = await setupHarness(sessionFor("bad-b64"));
 
-  const created = await app.inject({
+  const created = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("P")
   });
   const { id } = created.json() as { id: string };
 
-  // A string that passes the schema regex but is not decodable base64
-  // (odd length 3, decodes + re-encodes differently).
-  const response = await app.inject({
+  // 17 legal base64 chars with length %4 === 1 → passes the tiny-payload
+  // fast-fail and the character regex, but fails the length-mod-4 and
+  // round-trip checks → INVALID_BASE64.
+  const response = await mutatingInject(app, {
     method: "PATCH",
     url: `/projects/${id}/image`,
-    payload: { image: "AAA" }
+    payload: { image: "AAAAAAAAAAAAAAAAA" }
   });
   assert.equal(response.statusCode, 400);
   const body = response.json() as { error: string; reason: string };
@@ -328,7 +330,7 @@ test("PATCH /projects/:id/image while overLimit returns 403 OVER_TIER_LIMIT", as
   ]);
   await client.close();
 
-  const response = await app.inject({
+  const response = await mutatingInject(app, {
     method: "PATCH",
     url: `/projects/${pid.toHexString()}/image`,
     payload: { image: SAMPLE_JPEG_B64 }
@@ -346,7 +348,7 @@ test("DELETE /projects/:id succeeds even in overLimit (escape valve)", async () 
   // Create 4 normally-persisted projects to trip overLimit.
   const ids: string[] = [];
   for (let i = 1; i <= 4; i++) {
-    const res = await app.inject({
+    const res = await mutatingInject(app, {
       method: "POST",
       url: "/projects",
       payload: createPayload(`p${i}`)
@@ -358,14 +360,14 @@ test("DELETE /projects/:id succeeds even in overLimit (escape valve)", async () 
   }
 
   // User now overLimit. Write blocked, delete allowed.
-  const blocked = await app.inject({
+  const blocked = await mutatingInject(app, {
     method: "PATCH",
     url: `/projects/${ids[0]}/image`,
     payload: { image: SAMPLE_JPEG_B64 }
   });
   assert.equal(blocked.statusCode, 403);
 
-  const deleted = await app.inject({
+  const deleted = await mutatingInject(app, {
     method: "DELETE",
     url: `/projects/${ids[0]}`
   });
@@ -392,17 +394,20 @@ test("DELETE /projects/:id succeeds even in overLimit (escape valve)", async () 
 test("POST /projects/:id/restore within 14 days succeeds", async () => {
   const { app, teardown } = await setupHarness(sessionFor("restore-ok"));
 
-  const created = await app.inject({
+  const created = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("R")
   });
   const { id } = created.json() as { id: string };
 
-  const del = await app.inject({ method: "DELETE", url: `/projects/${id}` });
+  const del = await mutatingInject(app, {
+    method: "DELETE",
+    url: `/projects/${id}`
+  });
   assert.equal(del.statusCode, 200);
 
-  const restore = await app.inject({
+  const restore = await mutatingInject(app, {
     method: "POST",
     url: `/projects/${id}/restore`
   });
@@ -416,7 +421,7 @@ test("POST /projects/:id/restore past 14 days returns 410 GRACE_EXPIRED", async 
   const session = sessionFor("restore-expired");
   const { app, teardown, uri } = await setupHarness(session);
 
-  const created = await app.inject({
+  const created = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("R")
@@ -424,7 +429,7 @@ test("POST /projects/:id/restore past 14 days returns 410 GRACE_EXPIRED", async 
   const { id } = created.json() as { id: string };
 
   // Force delete + push deletedAt back 15 days.
-  await app.inject({ method: "DELETE", url: `/projects/${id}` });
+  await mutatingInject(app, { method: "DELETE", url: `/projects/${id}` });
   const client = new MongoClient(uri);
   await client.connect();
   const db = client.db("muralist-test");
@@ -434,7 +439,7 @@ test("POST /projects/:id/restore past 14 days returns 410 GRACE_EXPIRED", async 
     .updateOne({ _id: new ObjectId(id) }, { $set: { deletedAt: past } });
   await client.close();
 
-  const restore = await app.inject({
+  const restore = await mutatingInject(app, {
     method: "POST",
     url: `/projects/${id}/restore`
   });
@@ -448,7 +453,7 @@ test("POST /projects/:id/viewed touches lastViewedAt without bumping version", a
   const session = sessionFor("view-user");
   const { app, teardown, uri } = await setupHarness(session);
 
-  const created = await app.inject({
+  const created = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("V")
@@ -458,7 +463,7 @@ test("POST /projects/:id/viewed touches lastViewedAt without bumping version", a
   // Wait 5ms to make timestamp comparison reliable.
   await new Promise((r) => setTimeout(r, 5));
 
-  const viewed = await app.inject({
+  const viewed = await mutatingInject(app, {
     method: "POST",
     url: `/projects/${id}/viewed`
   });
@@ -480,19 +485,22 @@ test("POST /projects/:id/viewed touches lastViewedAt without bumping version", a
 test("GET /projects?status=trashed returns only trashed tiles", async () => {
   const { app, teardown } = await setupHarness(sessionFor("status-filter"));
 
-  const c1 = await app.inject({
+  const c1 = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("keep")
   });
-  const c2 = await app.inject({
+  const c2 = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("trash-me")
   });
   const trashId = (c2.json() as { id: string }).id;
 
-  await app.inject({ method: "DELETE", url: `/projects/${trashId}` });
+  await mutatingInject(app, {
+    method: "DELETE",
+    url: `/projects/${trashId}`
+  });
 
   const activeList = await app.inject({ method: "GET", url: "/projects" });
   const trashedList = await app.inject({
@@ -516,13 +524,13 @@ test("GET /projects?status=trashed returns only trashed tiles", async () => {
 test("GET /projects/:id for trashed project returns 410 without includeTrashed", async () => {
   const { app, teardown } = await setupHarness(sessionFor("trashed-get"));
 
-  const created = await app.inject({
+  const created = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("T")
   });
   const { id } = created.json() as { id: string };
-  await app.inject({ method: "DELETE", url: `/projects/${id}` });
+  await mutatingInject(app, { method: "DELETE", url: `/projects/${id}` });
 
   const denied = await app.inject({ method: "GET", url: `/projects/${id}` });
   assert.equal(denied.statusCode, 410);
@@ -539,14 +547,14 @@ test("GET /projects/:id for trashed project returns 410 without includeTrashed",
 test("PATCH /projects/:id/metadata updates name and mirrors to thumbnail tile", async () => {
   const { app, teardown } = await setupHarness(sessionFor("meta-user"));
 
-  const created = await app.inject({
+  const created = await mutatingInject(app, {
     method: "POST",
     url: "/projects",
     payload: createPayload("Old Name")
   });
   const { id } = created.json() as { id: string };
 
-  const update = await app.inject({
+  const update = await mutatingInject(app, {
     method: "PATCH",
     url: `/projects/${id}/metadata`,
     payload: { name: "New Name" }

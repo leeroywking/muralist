@@ -174,6 +174,62 @@ test("assertWriteAllowed passes at atLimit (one-grace-save) but blocks at overLi
   await teardown();
 });
 
+test("CSRF: GET /csrf-token seeds cookie and issues a verifiable token", async () => {
+  // Smoke test for the token-mint endpoint. The server returns { token } and
+  // sets the `csrf-token` cookie carrying the HMAC secret; subsequent
+  // mutating requests echo the token in the X-CSRF-Token header, and the
+  // csrfProtection preHandler verifies them against the cookie.
+  const { app, teardown } = await setupTestHarness(null);
+
+  const response = await app.inject({ method: "GET", url: "/csrf-token" });
+  assert.equal(response.statusCode, 200, response.body);
+  const body = response.json() as { token: string };
+  assert.equal(typeof body.token, "string");
+  assert.ok(body.token.length > 8);
+  const setCookie = response.headers["set-cookie"];
+  assert.ok(
+    setCookie && /csrf-token=/.test(
+      Array.isArray(setCookie) ? setCookie.join(";") : setCookie
+    ),
+    "expected csrf-token cookie in response"
+  );
+
+  await teardown();
+});
+
+test("CSRF: mutating /me/pro-settings without token returns 403 FST_CSRF_*", async () => {
+  // Regression guard for plan §3 ambiguity-C. Every mutating app-owned route
+  // is gated with `app.csrfProtection`. When `requireUser` passes but the
+  // CSRF token/cookie are missing, `@fastify/csrf-protection` raises a 403
+  // with a `FST_CSRF_*` code. Exercised via /me/pro-settings here because
+  // it's the simplest mutating endpoint — the gating pattern is identical
+  // across /account, /account/delete-cancel, and every /projects POST /
+  // PATCH / DELETE.
+  const session: AuthSession = {
+    user: { id: "csrf-user", email: "c@d.com" },
+    session: {
+      id: "sess-csrf",
+      userId: "csrf-user",
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString()
+    }
+  };
+  const { app, teardown } = await setupTestHarness(session);
+
+  const response = await app.inject({
+    method: "PATCH",
+    url: "/me/pro-settings",
+    payload: { autoCombineSensitivity: "balanced" }
+  });
+  assert.equal(response.statusCode, 403, `body=${response.body}`);
+  const body = response.json() as { error: string };
+  assert.ok(
+    typeof body.error === "string" && body.error.startsWith("FST_CSRF_"),
+    `expected FST_CSRF_* error code, got ${JSON.stringify(body)}`
+  );
+
+  await teardown();
+});
+
 test("assertWriteAllowed with allowInReadOnly bypasses the check", async () => {
   const session: AuthSession = {
     user: { id: "user-delete-case" },
