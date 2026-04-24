@@ -86,10 +86,18 @@ services:
         type: SECRET
       - key: APP_BASE_URL
         scope: RUN_AND_BUILD_TIME
-        # Hardcoded to the custom domain we bind in `domains:` above, so
-        # Better Auth callback URLs + CORS allowlist match what Cloudflare
-        # actually forwards. Change if the custom domain changes.
+        # Canonical API URL — Better Auth uses this to mint callback URLs
+        # (`<APP_BASE_URL>/api/auth/callback/<provider>`), which is where
+        # Google / Apple / etc will redirect back to. Must be the API
+        # subdomain, not the web origin. Change if the custom domain changes.
         value: https://api.muraliste.com
+      - key: WEB_ORIGIN
+        scope: RUN_TIME
+        # Origin of the Next.js client. Added to CORS + Better Auth
+        # trustedOrigins so cross-subdomain fetch calls from the web app are
+        # accepted. Without this the browser blocks every API call from
+        # muraliste.com → api.muraliste.com with a CORS error.
+        value: https://muraliste.com
       # OAuth provider credentials — wire when ready (see task #17).
       - key: GOOGLE_CLIENT_ID
         scope: RUN_TIME

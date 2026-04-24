@@ -18,6 +18,12 @@ export type CreateAuthOptions = {
   secret: string;
   appBaseURL: string;
   /**
+   * Web client origin. Added to Better Auth's trustedOrigins so sign-in
+   * POSTs from a different subdomain than the API are accepted. Omitted
+   * in local/test single-origin setups.
+   */
+  webOrigin?: string;
+  /**
    * Base path Better Auth is mounted on. Defaults to "/api/auth".
    * Keep in sync with how the server mounts the handler.
    */
@@ -85,6 +91,7 @@ export function createAuth(opts: CreateAuthOptions): CreateAuthResult {
     dbName,
     secret,
     appBaseURL,
+    webOrigin,
     basePath = "/api/auth",
     providers
   } = opts;
@@ -152,7 +159,9 @@ export function createAuth(opts: CreateAuthOptions): CreateAuthResult {
     secret,
     baseURL: appBaseURL,
     basePath,
-    trustedOrigins: [appBaseURL],
+    trustedOrigins: Array.from(
+      new Set([appBaseURL, webOrigin].filter((x): x is string => Boolean(x)))
+    ),
     database: mongodbAdapter(db, { client }),
     socialProviders,
     account: {

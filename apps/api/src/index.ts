@@ -54,11 +54,17 @@ try {
   const mongoClient = new MongoClient(env.MONGO_URI);
   await mongoClient.connect();
 
+  // WEB_ORIGIN is optional — falls back to APP_BASE_URL for single-origin
+  // setups (e.g. local dev). In staging/prod the web app lives on a
+  // different subdomain than the API and must be explicitly allowed.
+  const webOrigin = process.env.WEB_ORIGIN || undefined;
+
   const { auth, enabledProviders, skippedProviders } = createAuth({
     client: mongoClient,
     dbName: env.MONGO_DB_NAME,
     secret: env.BETTER_AUTH_SECRET,
     appBaseURL: env.APP_BASE_URL,
+    webOrigin,
     providers: {
       google: readOAuth("GOOGLE"),
       apple: readOAuth("APPLE"),
@@ -87,6 +93,7 @@ try {
 
   const app = await buildServer({
     appBaseURL: env.APP_BASE_URL,
+    webOrigin,
     mongo: { uri: env.MONGO_URI, dbName: env.MONGO_DB_NAME },
     auth,
     tierConfig,

@@ -26,11 +26,18 @@ import type { TierConfig, UploadLimits } from "@muralist/config";
 
 export type BuildServerOptions = {
   /**
-   * Public base URL of the web app. Used as the sole CORS origin and echoed
-   * to Better Auth as a trusted origin. Required — we do not fall back to
-   * `origin: true`.
+   * Canonical base URL Better Auth uses when minting callback URLs — this
+   * should be the API host (e.g. `https://api.muraliste.com`), since the
+   * OAuth provider will redirect to `<appBaseURL>/api/auth/callback/<id>`.
    */
   appBaseURL: string;
+  /**
+   * Origin of the web client. Allowed by CORS + registered as a trusted
+   * origin with Better Auth so sign-in POSTs from the web app's different
+   * subdomain are accepted. Defaults to `appBaseURL` when omitted (covers
+   * the single-origin test setups).
+   */
+  webOrigin?: string;
   /**
    * Mongo connection info. When omitted the Mongo plugin is not registered,
    * which is useful for targeted tests that inject a stub auth instance.
@@ -145,10 +152,15 @@ export async function buildServer(opts: BuildServerOptions) {
     }
   });
 
-  // 3. CORS — scoped to APP_BASE_URL only. DELIBERATE CHANGE from the prior
-  //    `origin: true`. Required by docs/SECURITY_REVIEW.md and plan step 20.
+  // 3. CORS — scoped allowlist. Includes the API's own base URL (for
+  //    potential same-origin tools / webhooks) and the web client origin
+  //    (the real user-facing case). Deduped so a single-origin test setup
+  //    doesn't pass the same string twice.
+  const corsOrigins = Array.from(
+    new Set([opts.appBaseURL, opts.webOrigin].filter((x): x is string => Boolean(x)))
+  );
   await app.register(cors, {
-    origin: opts.appBaseURL,
+    origin: corsOrigins,
     credentials: true,
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "X-CSRF-Token", "If-Match"]
