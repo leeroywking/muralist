@@ -18,8 +18,9 @@ sanitizedImage:
   longEdge: 640            # px
   jpegQuality: 0.8
 thumbnail:
-  maxBytes: 16384          # ~16 KB — 192px long-edge at q=0.8 for complex
-                           # art lands around 10–15 KB, so 8 KB was too tight.
+  maxBytes: 24576          # ~24 KB — covers the absolute-worst-case 192px
+                           # q=0.8 JPEG (~22 KB for pathological noise). At
+                           # 16 KB complex art was edging past on upload.
   longEdge: 192            # px
   jpegQuality: 0.8
 # The sanitizer always re-encodes to JPEG before upload, so the server never
