@@ -348,3 +348,16 @@ can pick up cold. All commits land on `main` via `feat/persistence-auth-backend`
 - `config/upload-limits.yaml` — current caps (400 KB / 64 KB).
 - `apps/api/src/schemas/project.ts` — base64 char cap at 600k.
 - `.do/app.yaml` — both components track `main`.
+
+### Deploy-time gotcha seen 2026-04-24
+
+Applying `.do/app.yaml` directly via `doctl apps update --spec .do/app.yaml`
+wiped `MONGO_URI` and `BETTER_AUTH_SECRET` on the app, because the
+committed yaml declares those fields as `type: SECRET` with no `value:`.
+Every subsequent deploy failed at phase 5/7 with `Missing required
+environment variables`; DO auto-rolled back each time, which was what
+kept the site serving but also masked the real problem until the next
+deploy attempt failed identically. Recovery: build a temporary spec file
+in `~/` that copies `.do/app.yaml` but inlines real `value:` fields for
+each SECRET, run `doctl apps update --spec ~/tmp.yaml`, then delete the
+temp file. Never apply the repo's yaml directly for secret-bearing keys.
