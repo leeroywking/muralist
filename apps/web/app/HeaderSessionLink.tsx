@@ -59,9 +59,14 @@ export function HeaderSessionLink() {
 
   if (state.status === "signed-in") {
     return (
-      <a className="header-session-link" href="/signin">
-        Signed in as {state.label}
-      </a>
+      <>
+        <a className="header-session-link" href="/projects">
+          Projects
+        </a>
+        <a className="header-session-link" href="/signin">
+          Signed in as {state.label}
+        </a>
+      </>
     );
   }
 
