@@ -50,7 +50,8 @@ function makeFile(bytes: Uint8Array, name: string, type: string): File {
 }
 
 test("sanitizeUpload rejects non-allowlisted extensions", async () => {
-  const file = makeFile(JPEG_HEADER, "photo.png", "image/png");
+  // .heic is not in the allowlist; .png is (see allowed-extensions test below).
+  const file = makeFile(JPEG_HEADER, "photo.heic", "image/heic");
   await assert.rejects(
     () => sanitizeUpload(file, limits),
     (err: unknown) => {
@@ -60,6 +61,24 @@ test("sanitizeUpload rejects non-allowlisted extensions", async () => {
         "EXTENSION_NOT_ALLOWED"
       );
       return true;
+    }
+  );
+});
+
+test("sanitizeUpload accepts .png at the extension + magic-byte check", async () => {
+  // PNG payload in .png file — passes both checks. The canvas decode step
+  // isn't available in node:test, so we expect DECODE_FAILED or
+  // OFFSCREEN_CANVAS_UNAVAILABLE (whichever the runtime surfaces first),
+  // which confirms we've gotten past extension + magic-byte gates.
+  const file = makeFile(PNG_HEADER, "photo.png", "image/png");
+  await assert.rejects(
+    () => sanitizeUpload(file, limits),
+    (err: unknown) => {
+      assert.ok(err instanceof UploadSanitizationError);
+      const reason = (err as UploadSanitizationError).reason;
+      return (
+        reason === "DECODE_FAILED" || reason === "OFFSCREEN_CANVAS_UNAVAILABLE"
+      );
     }
   );
 });
@@ -75,10 +94,11 @@ test("sanitizeUpload rejects .gif even with JPEG magic bytes inside", async () =
 });
 
 test("sanitizeUpload accepts .JPG (case-insensitive) at the extension check", async () => {
-  // This file is .JPG with a PNG payload, so the extension check passes but
-  // the magic-byte check fails next — confirming the extension check is
-  // case-insensitive without exercising the canvas path.
-  const file = makeFile(PNG_HEADER, "photo.JPG", "image/jpeg");
+  // Arbitrary non-image bytes in a .JPG file — extension passes (proving
+  // case-insensitive match), magic-byte check fails. Using junk bytes rather
+  // than PNG so we don't accidentally depend on PNG being rejected.
+  const junk = new Uint8Array([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
+  const file = makeFile(junk, "photo.JPG", "image/jpeg");
   await assert.rejects(
     () => sanitizeUpload(file, limits),
     (err: unknown) =>
@@ -87,8 +107,13 @@ test("sanitizeUpload accepts .JPG (case-insensitive) at the extension check", as
   );
 });
 
-test("sanitizeUpload rejects mismatched magic bytes (PNG inside .jpg)", async () => {
-  const file = makeFile(PNG_HEADER, "fake.jpg", "image/jpeg");
+test("sanitizeUpload rejects non-image binary data with an allowed extension", async () => {
+  // Allowed extension + junk bytes — extension gate passes, magic-byte gate
+  // fails. The three accepted formats (JPEG/WebP/PNG) are format-agnostic at
+  // the magic-byte layer, so mixing them across extensions is tolerated;
+  // only truly non-image data should trip MAGIC_BYTES_MISMATCH.
+  const junk = new Uint8Array([0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef]);
+  const file = makeFile(junk, "fake.jpg", "image/jpeg");
   await assert.rejects(
     () => sanitizeUpload(file, limits),
     (err: unknown) => {
@@ -100,6 +125,11 @@ test("sanitizeUpload rejects mismatched magic bytes (PNG inside .jpg)", async ()
       return true;
     }
   );
+});
+
+test("verifyMagicBytes accepts PNG", async () => {
+  const blob = new NodeBlob([PNG_HEADER]) as unknown as Blob;
+  await verifyMagicBytes(blob);
 });
 
 test("verifyMagicBytes accepts JPEG", async () => {

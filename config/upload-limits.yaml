@@ -13,13 +13,17 @@
 
 version: 1
 sanitizedImage:
-  maxBytes: 25600          # ~25 KB
+  maxBytes: 204800         # ~200 KB — fits photo-quality 640px JPEGs with
+                           # headroom. Still ~80× under Mongo's 16 MB doc cap.
   longEdge: 640            # px
   jpegQuality: 0.8
 thumbnail:
-  maxBytes: 8192           # ~8 KB
+  maxBytes: 16384          # ~16 KB — 192px long-edge at q=0.8 for complex
+                           # art lands around 10–15 KB, so 8 KB was too tight.
   longEdge: 192            # px
   jpegQuality: 0.8
+# The sanitizer always re-encodes to JPEG before upload, so the server never
+# sees PNG even though the client extension allowlist accepts .png.
 contentTypeAllowlist:
   - image/jpeg
   - image/webp

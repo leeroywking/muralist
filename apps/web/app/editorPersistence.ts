@@ -37,8 +37,8 @@ import type {
 // from it and keep these as the offline fallback.
 export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
   version: 1,
-  sanitizedImage: { maxBytes: 25600, longEdge: 640, jpegQuality: 0.8 },
-  thumbnail: { maxBytes: 8192, longEdge: 192, jpegQuality: 0.8 },
+  sanitizedImage: { maxBytes: 204800, longEdge: 640, jpegQuality: 0.8 },
+  thumbnail: { maxBytes: 16384, longEdge: 192, jpegQuality: 0.8 },
   contentTypeAllowlist: ["image/jpeg", "image/webp"]
 };
 
