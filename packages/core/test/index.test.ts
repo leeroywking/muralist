@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import type { PaintBrandCatalog } from "@muralist/config";
 import { loadPaintBrandCatalog } from "@muralist/config";
 import {
+  applyClassification,
+  applyMixesToCoverage,
   buildMaquetteFileName,
+  classifyPaletteColors,
   compareAspectRatios,
   deriveColorAreaEstimates,
   deriveGridSpec,
@@ -11,6 +14,7 @@ import {
   getAuthCapabilities,
   suggestContainersForColors
 } from "../src/index.js";
+import type { ClassifyPaletteInput } from "../src/index.js";
 
 test("guest mode cannot persist data", () => {
   const auth = getAuthCapabilities();
@@ -431,3 +435,277 @@ function buildExpensiveQuartsCatalog(): PaintBrandCatalog {
     ]
   };
 }
+
+test("classifyPaletteColors collapses an even red-blue gradient to its two endpoints", () => {
+  const steps = 10;
+  const colors: ClassifyPaletteInput[] = [];
+  for (let i = 0; i < steps; i += 1) {
+    const t = i / (steps - 1);
+    colors.push({
+      id: `step-${i}`,
+      rgb: [Math.round(255 * (1 - t)), 0, Math.round(255 * t)],
+      pixelCount: 100
+    });
+  }
+
+  const classifications = classifyPaletteColors(colors, {
+    residualThreshold: 18,
+    mixCoveragePercent: 50
+  });
+
+  const buyIds = classifications.filter((entry) => entry.classification === "buy").map((entry) => entry.id);
+  const absorbIds = classifications.filter((entry) => entry.classification === "absorb").map((entry) => entry.id);
+
+  // Endpoints survive as buy, every middle step dissolves. Each step is 10% of
+  // coverage, so mixCoveragePercent of 50 pushes every gradient middle to
+  // absorb rather than mix.
+  assert.equal(buyIds.length, 2);
+  assert.ok(buyIds.includes("step-0"));
+  assert.ok(buyIds.includes(`step-${steps - 1}`));
+  assert.equal(absorbIds.length, steps - 2);
+});
+
+test("classifyPaletteColors keeps a dominant mid-gradient color as a mix with a 50/50 recipe", () => {
+  const colors: ClassifyPaletteInput[] = [
+    { id: "red", rgb: [255, 0, 0], pixelCount: 30 },
+    { id: "blue", rgb: [0, 0, 255], pixelCount: 30 },
+    { id: "purple", rgb: [128, 0, 128], pixelCount: 40 }
+  ];
+
+  const classifications = classifyPaletteColors(colors, {
+    residualThreshold: 18,
+    mixCoveragePercent: 5
+  });
+
+  const classByMap = new Map(classifications.map((entry) => [entry.id, entry]));
+  assert.equal(classByMap.get("red")?.classification, "buy");
+  assert.equal(classByMap.get("blue")?.classification, "buy");
+  const purple = classByMap.get("purple");
+  assert.equal(purple?.classification, "mix");
+  assert.ok(purple?.recipe);
+  const fractionsById = Object.fromEntries(
+    (purple!.recipe!.components).map((component) => [component.colorId, component.fraction])
+  );
+  assert.ok(Math.abs((fractionsById.red ?? 0) - 0.5) < 0.05);
+  assert.ok(Math.abs((fractionsById.blue ?? 0) - 0.5) < 0.05);
+});
+
+test("classifyPaletteColors keeps three independent primaries all as buy", () => {
+  const classifications = classifyPaletteColors(
+    [
+      { id: "red", rgb: [220, 20, 20], pixelCount: 100 },
+      { id: "green", rgb: [20, 220, 20], pixelCount: 100 },
+      { id: "blue", rgb: [20, 20, 220], pixelCount: 100 }
+    ],
+    { residualThreshold: 18, mixCoveragePercent: 5 }
+  );
+
+  assert.equal(classifications.filter((entry) => entry.classification === "buy").length, 3);
+});
+
+test("classifyPaletteColors keeps a lone off-line accent as buy", () => {
+  const classifications = classifyPaletteColors(
+    [
+      { id: "red", rgb: [220, 20, 20], pixelCount: 500 },
+      { id: "blue", rgb: [20, 20, 220], pixelCount: 500 },
+      { id: "accent", rgb: [250, 180, 30], pixelCount: 5 }
+    ],
+    { residualThreshold: 18, mixCoveragePercent: 5 }
+  );
+
+  const accent = classifications.find((entry) => entry.id === "accent");
+  assert.equal(accent?.classification, "buy");
+});
+
+test("classifyPaletteColors resolves transitive absorb chains across dedup and gradient passes", () => {
+  // Two clusters along a mixing line. Each cluster has a dedup pair (tight
+  // Euclidean neighbors). The cluster centroids lie on a segment with a
+  // mid-gradient color in between. Mid's coverage is below the mix threshold
+  // so it should absorb into the cluster it is nearest to. The dedup pair
+  // inside the target cluster was routed to a color that Phase 2 then also
+  // absorbs — without path compression the final pointers would reference
+  // a no-longer-surviving keeper.
+  const colors: ClassifyPaletteInput[] = [
+    { id: "red-main", rgb: [210, 40, 40], pixelCount: 100 },
+    { id: "red-near", rgb: [214, 44, 43], pixelCount: 20 },
+    { id: "blue-main", rgb: [40, 40, 210], pixelCount: 90 },
+    { id: "blue-near", rgb: [36, 43, 213], pixelCount: 15 },
+    { id: "mid", rgb: [125, 40, 125], pixelCount: 8 }
+  ];
+  const classifications = classifyPaletteColors(colors, {
+    residualThreshold: 28,
+    mixCoveragePercent: 10
+  });
+  // Every absorb must point at a buy so applyClassification can fold safely.
+  const buyIds = new Set(
+    classifications.filter((entry) => entry.classification === "buy").map((entry) => entry.id)
+  );
+  for (const entry of classifications) {
+    if (entry.classification !== "absorb") continue;
+    assert.ok(
+      entry.absorbedIntoId && buyIds.has(entry.absorbedIntoId),
+      `${entry.id} should absorb into a buy color, not ${entry.absorbedIntoId}`
+    );
+  }
+  // And applyClassification should not throw on the chain.
+  assert.doesNotThrow(() => applyClassification(colors, classifications));
+});
+
+test("classifyPaletteColors deduplicates near-neighbors even when no mixing line exists", () => {
+  // Two tight clusters plus a distant outlier. No color is on a line between
+  // others, but each cluster has near-duplicate members that should collapse.
+  const colors: ClassifyPaletteInput[] = [
+    { id: "cluster-a-1", rgb: [200, 30, 30], pixelCount: 100 },
+    { id: "cluster-a-2", rgb: [205, 35, 32], pixelCount: 20 },
+    { id: "cluster-b-1", rgb: [30, 30, 200], pixelCount: 80 },
+    { id: "cluster-b-2", rgb: [34, 28, 198], pixelCount: 15 },
+    { id: "outlier", rgb: [40, 200, 40], pixelCount: 60 }
+  ];
+  const classifications = classifyPaletteColors(colors, {
+    residualThreshold: 30,
+    mixCoveragePercent: 5
+  });
+  const classByMap = new Map(classifications.map((entry) => [entry.id, entry]));
+
+  // Near-duplicates absorb into the higher-coverage keeper of their cluster.
+  assert.equal(classByMap.get("cluster-a-2")?.classification, "absorb");
+  assert.equal(classByMap.get("cluster-a-2")?.absorbedIntoId, "cluster-a-1");
+  assert.equal(classByMap.get("cluster-b-2")?.classification, "absorb");
+  assert.equal(classByMap.get("cluster-b-2")?.absorbedIntoId, "cluster-b-1");
+  // Remaining three are all independent buys.
+  assert.equal(classByMap.get("cluster-a-1")?.classification, "buy");
+  assert.equal(classByMap.get("cluster-b-1")?.classification, "buy");
+  assert.equal(classByMap.get("outlier")?.classification, "buy");
+});
+
+test("classifyPaletteColors with fewer than three colors marks every entry as buy", () => {
+  const classifications = classifyPaletteColors(
+    [
+      { id: "a", rgb: [0, 0, 0], pixelCount: 50 },
+      { id: "b", rgb: [255, 255, 255], pixelCount: 50 }
+    ],
+    { residualThreshold: 18, mixCoveragePercent: 5 }
+  );
+
+  assert.deepEqual(
+    classifications.map((entry) => entry.classification),
+    ["buy", "buy"]
+  );
+});
+
+test("classifyPaletteColors rejects invalid options", () => {
+  const colors: ClassifyPaletteInput[] = [
+    { id: "a", rgb: [10, 10, 10], pixelCount: 1 },
+    { id: "b", rgb: [250, 250, 250], pixelCount: 1 }
+  ];
+  assert.throws(
+    () => classifyPaletteColors(colors, { residualThreshold: 0, mixCoveragePercent: 5 }),
+    /Residual threshold must be greater than zero/
+  );
+  assert.throws(
+    () => classifyPaletteColors(colors, { residualThreshold: 10, mixCoveragePercent: -1 }),
+    /Mix coverage percent must be zero or greater/
+  );
+});
+
+test("applyClassification folds absorbed pixel counts into the keeper and surfaces mix recipes", () => {
+  const colors: ClassifyPaletteInput[] = [
+    { id: "red", rgb: [255, 0, 0], pixelCount: 40 },
+    { id: "blue", rgb: [0, 0, 255], pixelCount: 30 },
+    { id: "mid", rgb: [128, 0, 128], pixelCount: 20 },
+    { id: "near-red", rgb: [200, 0, 50], pixelCount: 10 }
+  ];
+  const { nextColors, mixes, absorbedCount } = applyClassification(colors, [
+    { id: "red", classification: "buy" },
+    { id: "blue", classification: "buy" },
+    {
+      id: "mid",
+      classification: "mix",
+      recipe: {
+        targetColorId: "mid",
+        components: [
+          { colorId: "red", fraction: 0.5 },
+          { colorId: "blue", fraction: 0.5 }
+        ]
+      }
+    },
+    { id: "near-red", classification: "absorb", absorbedIntoId: "red" }
+  ]);
+
+  assert.equal(absorbedCount, 1);
+  assert.equal(mixes.length, 1);
+  assert.equal(mixes[0]!.targetColorId, "mid");
+  const nextById = Object.fromEntries(nextColors.map((color) => [color.id, color.pixelCount]));
+  assert.equal(nextById.red, 50); // 40 + 10 absorbed
+  assert.equal(nextById.blue, 30);
+  assert.equal(nextById.mid, 20); // mix stays in palette
+  assert.ok(!("near-red" in nextById));
+});
+
+test("applyMixesToCoverage redistributes a mix's coverage to its components and drops the target", () => {
+  const result = applyMixesToCoverage(
+    [
+      { id: "red", coveragePercent: 40 },
+      { id: "blue", coveragePercent: 30 },
+      { id: "purple", coveragePercent: 30 }
+    ],
+    [
+      {
+        targetColorId: "purple",
+        components: [
+          { colorId: "red", fraction: 0.4 },
+          { colorId: "blue", fraction: 0.6 }
+        ]
+      }
+    ]
+  );
+
+  const byId = Object.fromEntries(result.map((color) => [color.id, color.coveragePercent]));
+  assert.equal(byId.red, 40 + 0.4 * 30);
+  assert.equal(byId.blue, 30 + 0.6 * 30);
+  assert.ok(!("purple" in byId));
+  const totalAfter = result.reduce((sum, color) => sum + color.coveragePercent, 0);
+  assert.ok(Math.abs(totalAfter - 100) < 1e-9);
+});
+
+test("applyMixesToCoverage rejects unknown component references and bad fraction sums", () => {
+  assert.throws(
+    () =>
+      applyMixesToCoverage(
+        [
+          { id: "red", coveragePercent: 50 },
+          { id: "blue", coveragePercent: 50 }
+        ],
+        [
+          {
+            targetColorId: "red",
+            components: [
+              { colorId: "red", fraction: 0.5 },
+              { colorId: "mystery", fraction: 0.5 }
+            ]
+          }
+        ]
+      ),
+    /Mix component mystery for red is not in the coverage list/
+  );
+
+  assert.throws(
+    () =>
+      applyMixesToCoverage(
+        [
+          { id: "red", coveragePercent: 50 },
+          { id: "blue", coveragePercent: 50 }
+        ],
+        [
+          {
+            targetColorId: "red",
+            components: [
+              { colorId: "blue", fraction: 0.3 },
+              { colorId: "red", fraction: 0.3 }
+            ]
+          }
+        ]
+      ),
+    /expected 1.0/
+  );
+});

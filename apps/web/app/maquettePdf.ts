@@ -7,7 +7,10 @@ import {
   rgb
 } from "pdf-lib";
 import { buildMaquetteFileName } from "@muralist/core";
-import type { FieldSheetColor, FieldSheetModel } from "./PrototypeApp";
+import type { MixRecipe, WorkspaceContent } from "@muralist/core";
+import type { FieldSheetColorWithClassification, FieldSheetModel } from "./PrototypeApp";
+
+type FieldSheetColor = FieldSheetColorWithClassification;
 
 export type DownloadMaquettePdfInput = {
   model: FieldSheetModel;
@@ -53,6 +56,8 @@ export async function downloadMaquettePdf(input: DownloadMaquettePdfInput): Prom
 
   const page = doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   const fonts = { regular: helvetica, bold: helveticaBold };
+
+  populateMixHexLookup(model.colors);
 
   let cursorY = PAGE_HEIGHT - MARGIN;
 
@@ -294,13 +299,29 @@ function drawMiddleRow(
   const swatchX = MARGIN + CONTENT_WIDTH - SWATCH_COLUMN_WIDTH;
   const workspaceRight = swatchX - SWATCH_COLUMN_GAP;
 
-  drawWorkspace(page, fonts, MARGIN, workspaceRight, topY, bottom);
+  drawWorkspaceContent(page, fonts, model.workspace, MARGIN, workspaceRight, topY, bottom);
   drawSwatchTable(page, fonts, model, colors, swatchX, topY, MIDDLE_ROW_HEIGHT);
 
   return bottom;
 }
 
-function drawWorkspace(
+function drawWorkspaceContent(
+  page: PDFPage,
+  fonts: { regular: PDFFont; bold: PDFFont },
+  workspace: WorkspaceContent,
+  left: number,
+  right: number,
+  top: number,
+  bottom: number
+): void {
+  if (workspace.kind === "mixes" && workspace.mixes.length > 0) {
+    drawMixRecipes(page, fonts, workspace.mixes, left, right, top, bottom);
+    return;
+  }
+  drawBlankWorkspace(page, fonts, left, right, top, bottom);
+}
+
+function drawBlankWorkspace(
   page: PDFPage,
   fonts: { regular: PDFFont; bold: PDFFont },
   left: number,
@@ -345,6 +366,184 @@ function drawWorkspace(
       thickness: 0.3,
       color: WORKSPACE_GUIDE
     });
+  }
+}
+
+function drawMixRecipes(
+  page: PDFPage,
+  fonts: { regular: PDFFont; bold: PDFFont },
+  mixes: MixRecipe[],
+  left: number,
+  right: number,
+  top: number,
+  bottom: number
+): void {
+  const width = right - left;
+  const height = top - bottom;
+
+  page.drawRectangle({
+    x: left,
+    y: bottom,
+    width,
+    height,
+    borderColor: RULE,
+    borderWidth: 0.5
+  });
+
+  page.drawText("Mix recipes", {
+    x: left + 8,
+    y: top - 14,
+    size: 9,
+    font: fonts.bold,
+    color: INK
+  });
+  page.drawText("Paint these colors by mixing the buy colors to the right.", {
+    x: left + 8,
+    y: top - 25,
+    size: 7,
+    font: fonts.regular,
+    color: MUTED,
+    maxWidth: width - 16
+  });
+
+  const listTop = top - 38;
+  const listBottom = bottom + 12;
+  const available = listTop - listBottom;
+  const rowHeight = 42;
+  const capacity = Math.max(1, Math.floor(available / rowHeight));
+  const shown = mixes.slice(0, capacity);
+  const hiddenCount = mixes.length - shown.length;
+
+  for (let index = 0; index < shown.length; index += 1) {
+    const recipe = shown[index]!;
+    const rowTop = listTop - index * rowHeight;
+    drawMixRecipeRow(page, fonts, recipe, left + 10, right - 10, rowTop, rowHeight);
+    if (index < shown.length - 1) {
+      page.drawLine({
+        start: { x: left + 10, y: rowTop - rowHeight + 2 },
+        end: { x: right - 10, y: rowTop - rowHeight + 2 },
+        thickness: 0.3,
+        color: RULE
+      });
+    }
+  }
+
+  if (hiddenCount > 0) {
+    page.drawText(`… and ${hiddenCount} more mix${hiddenCount === 1 ? "" : "es"} not shown`, {
+      x: left + 10,
+      y: listBottom + 2,
+      size: 7,
+      font: fonts.regular,
+      color: MUTED
+    });
+  }
+}
+
+function drawMixRecipeRow(
+  page: PDFPage,
+  fonts: { regular: PDFFont; bold: PDFFont },
+  recipe: MixRecipe,
+  left: number,
+  right: number,
+  rowTop: number,
+  rowHeight: number
+): void {
+  const swatchSize = 22;
+  const centerY = rowTop - rowHeight / 2;
+  const swatchY = centerY - swatchSize / 2;
+
+  const targetHex = mixHexLookup.target.get(recipe.targetColorId) ?? "#000000";
+  page.drawRectangle({
+    x: left,
+    y: swatchY,
+    width: swatchSize,
+    height: swatchSize,
+    color: parseHexColor(targetHex),
+    borderColor: RULE,
+    borderWidth: 0.5
+  });
+  page.drawText(targetHex, {
+    x: left,
+    y: swatchY - 9,
+    size: 7,
+    font: fonts.regular,
+    color: INK
+  });
+
+  const equalsX = left + swatchSize + 6;
+  page.drawText("=", {
+    x: equalsX,
+    y: centerY - 4,
+    size: 11,
+    font: fonts.bold,
+    color: MUTED
+  });
+
+  let cursorX = equalsX + 10;
+  for (let index = 0; index < recipe.components.length; index += 1) {
+    const component = recipe.components[index]!;
+    const hex = mixHexLookup.component.get(component.colorId) ?? "#000000";
+    page.drawRectangle({
+      x: cursorX,
+      y: swatchY,
+      width: swatchSize,
+      height: swatchSize,
+      color: parseHexColor(hex),
+      borderColor: RULE,
+      borderWidth: 0.5
+    });
+    const percent = Math.round(component.fraction * 100);
+    const label = `${percent}%`;
+    page.drawText(label, {
+      x: cursorX + swatchSize + 4,
+      y: centerY - 3,
+      size: 8,
+      font: fonts.bold,
+      color: INK
+    });
+    page.drawText(hex, {
+      x: cursorX,
+      y: swatchY - 9,
+      size: 7,
+      font: fonts.regular,
+      color: MUTED
+    });
+    cursorX += swatchSize + 4 + fonts.bold.widthOfTextAtSize(label, 8) + 12;
+    if (index < recipe.components.length - 1) {
+      page.drawText("+", {
+        x: cursorX - 8,
+        y: centerY - 4,
+        size: 10,
+        font: fonts.bold,
+        color: MUTED
+      });
+    }
+    if (cursorX > right - swatchSize) break;
+  }
+}
+
+// Populated per PDF render so drawMixRecipeRow can resolve color ids back to
+// hex values without plumbing the full model through every helper.
+const mixHexLookup = {
+  target: new Map<string, string>(),
+  component: new Map<string, string>()
+};
+
+function populateMixHexLookup(colors: FieldSheetColor[]): void {
+  mixHexLookup.target.clear();
+  mixHexLookup.component.clear();
+  for (const color of colors) {
+    if (color.classification === "mix") {
+      mixHexLookup.target.set(color.colorId, color.hex);
+    } else {
+      mixHexLookup.component.set(color.colorId, color.hex);
+    }
+  }
+  // Allow mixes to reference buys even when a buy's classification is not set.
+  for (const color of colors) {
+    if (!mixHexLookup.component.has(color.colorId)) {
+      mixHexLookup.component.set(color.colorId, color.hex);
+    }
   }
 }
 
@@ -453,6 +652,34 @@ function drawSwatchRow(
     color: MUTED
   });
 
+  if (color.classification === "mix") {
+    page.drawText("MIX", {
+      x: textLeft,
+      y: rowTop - 19,
+      size: 7,
+      font: fonts.bold,
+      color: WARN_INK
+    });
+    const mixLabel = color.recipe ? describeRecipeShort(color.recipe) : "combine buy colors";
+    page.drawText(mixLabel, {
+      x: textLeft + 20,
+      y: rowTop - 19,
+      size: 7.5,
+      font: fonts.regular,
+      color: INK,
+      maxWidth: textWidth - 22
+    });
+    page.drawText(`${color.areaSqFt.toFixed(1)} sq ft coverage · no separate purchase`, {
+      x: textLeft,
+      y: rowTop - 28,
+      size: 7.5,
+      font: fonts.regular,
+      color: MUTED,
+      maxWidth: textWidth
+    });
+    return;
+  }
+
   const lineTwo = `${color.areaSqFt.toFixed(1)} sq ft · ${color.finishLabel} · ${color.coats}c`;
   page.drawText(lineTwo, {
     x: textLeft,
@@ -472,6 +699,15 @@ function drawSwatchRow(
     color: INK,
     maxWidth: textWidth
   });
+}
+
+function describeRecipeShort(recipe: MixRecipe): string {
+  return recipe.components
+    .map((component) => {
+      const hex = mixHexLookup.component.get(component.colorId) ?? component.colorId;
+      return `${Math.round(component.fraction * 100)}% ${hex}`;
+    })
+    .join(" + ");
 }
 
 function drawNotesAndTotals(
@@ -552,8 +788,13 @@ function drawNotesAndTotals(
     color: MUTED,
     maxWidth: totalsWidth - 16
   });
+  const buyCount = model.colors.filter((color) => color.classification !== "mix").length;
+  const mixCount = model.colors.length - buyCount;
+  const colorSummary = mixCount > 0
+    ? `${buyCount} to buy · ${mixCount} to mix`
+    : `${buyCount} colors`;
   page.drawText(
-    `${model.wall.areaSqFt.toFixed(0)} sq ft · ${model.colors.length} colors · ${model.grid.cellSizeFt} ft grid`,
+    `${model.wall.areaSqFt.toFixed(0)} sq ft · ${colorSummary} · ${model.grid.cellSizeFt} ft grid`,
     {
       x: totalsLeft + 8,
       y: topY - 74,

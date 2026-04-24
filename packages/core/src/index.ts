@@ -103,6 +103,45 @@ export type ColorAreaInput = {
   coveragePercent: number;
 };
 
+export type PaletteClassification = "buy" | "mix" | "absorb";
+
+export type MixComponent = {
+  colorId: string;
+  fraction: number;
+};
+
+export type MixRecipe = {
+  targetColorId: string;
+  components: MixComponent[];
+};
+
+export type ClassifyPaletteInput = {
+  id: string;
+  rgb: [number, number, number];
+  pixelCount: number;
+};
+
+export type ClassifyPaletteOptions = {
+  /** Maximum per-channel residual (in 0-255 RGB units) for a color to count as
+   * lying on a mixing line. Default 18. Lower = stricter, keeps more buy
+   * colors; higher = more aggressive, collapses more onto mixing lines. */
+  residualThreshold: number;
+  /** Coverage percent threshold that splits mix (kept with recipe, >= threshold)
+   * from absorb (silently folded into nearest endpoint, < threshold). */
+  mixCoveragePercent: number;
+};
+
+export type ClassifiedColor = {
+  id: string;
+  classification: PaletteClassification;
+  absorbedIntoId?: string;
+  recipe?: MixRecipe;
+};
+
+export type WorkspaceContent =
+  | { kind: "blank" }
+  | { kind: "mixes"; mixes: MixRecipe[] };
+
 export type ColorAreaEstimate = {
   id: string;
   coveragePercent: number;
@@ -400,4 +439,411 @@ function remainderOrFull(value: number, divisor: number) {
 
 function nearlyEqual(left: number, right: number) {
   return Math.abs(left - right) < 1e-9;
+}
+
+export function classifyPaletteColors(
+  colors: ClassifyPaletteInput[],
+  options: ClassifyPaletteOptions
+): ClassifiedColor[] {
+  assertPositiveFinite("Residual threshold", options.residualThreshold);
+  if (!Number.isFinite(options.mixCoveragePercent) || options.mixCoveragePercent < 0) {
+    throw new Error("Mix coverage percent must be zero or greater.");
+  }
+
+  const totalPixels = colors.reduce((sum, color) => sum + color.pixelCount, 0);
+  if (totalPixels <= 0 || colors.length === 0) {
+    return [];
+  }
+
+  const coverageById = new Map<string, number>();
+  for (const color of colors) {
+    coverageById.set(color.id, (color.pixelCount / totalPixels) * 100);
+  }
+
+  // Phase 0: near-duplicate dedup. Real-image palettes capture many colors
+  // that are geometric neighbors of each other in RGB space without being on
+  // a three-point mixing line. The line-fitting algorithm alone misses them.
+  // Here we merge any pair whose Euclidean RGB distance falls below the
+  // residual threshold — the lower-coverage member absorbs into the
+  // higher-coverage one, silently (no mix recipe).
+  const dedupResult = dedupNearestNeighbors(colors, options.residualThreshold);
+  const survivors = dedupResult.survivors;
+  const dedupAbsorbs = dedupResult.absorbs; // id -> keeperId
+
+  if (survivors.length === 0) {
+    return colors.map((color) => ({
+      id: color.id,
+      classification: "absorb",
+      absorbedIntoId: dedupAbsorbs.get(color.id) ?? color.id
+    }));
+  }
+
+  // Phase 1: identify extreme (buy) colors among survivors. A color is
+  // extreme if no pair of *other* survivor colors can express it as a
+  // segment interpolation within the residual threshold. In a gradient, the
+  // two endpoints are extreme and every middle step is interior.
+  const extremeIds = new Set<string>();
+  for (const candidate of survivors) {
+    const others = survivors.filter((color) => color.id !== candidate.id);
+    const fit = findBestMixingPair(candidate, others, options.residualThreshold);
+    if (!fit) {
+      extremeIds.add(candidate.id);
+    }
+  }
+
+  // Degenerate fallback: if every survivor sits on some mixing line,
+  // promote the highest-coverage survivor so we always have at least one buy.
+  if (extremeIds.size === 0) {
+    let topId: string | null = null;
+    let topPixels = -Infinity;
+    for (const color of survivors) {
+      if (color.pixelCount > topPixels) {
+        topPixels = color.pixelCount;
+        topId = color.id;
+      }
+    }
+    if (topId) extremeIds.add(topId);
+  }
+
+  const extremes = survivors.filter((color) => extremeIds.has(color.id));
+  const classifications = new Map<string, ClassifiedColor>();
+
+  // Phase 2: interior survivors classify as mix or absorb based on coverage.
+  // Recompute coverage using the *absorbed* pixel counts so dedup-absorbed
+  // members contribute to their keeper's mix-threshold check.
+  const adjustedPixelsById = new Map<string, number>();
+  for (const survivor of survivors) {
+    adjustedPixelsById.set(survivor.id, survivor.pixelCount);
+  }
+  for (const [absorbedId, keeperId] of dedupAbsorbs.entries()) {
+    const absorbed = colors.find((color) => color.id === absorbedId);
+    if (!absorbed) continue;
+    const current = adjustedPixelsById.get(keeperId) ?? 0;
+    adjustedPixelsById.set(keeperId, current + absorbed.pixelCount);
+  }
+  const adjustedCoverageById = new Map<string, number>();
+  let adjustedTotal = 0;
+  for (const value of adjustedPixelsById.values()) adjustedTotal += value;
+  if (adjustedTotal > 0) {
+    for (const [id, pixels] of adjustedPixelsById.entries()) {
+      adjustedCoverageById.set(id, (pixels / adjustedTotal) * 100);
+    }
+  }
+
+  for (const color of survivors) {
+    if (extremeIds.has(color.id)) {
+      classifications.set(color.id, { id: color.id, classification: "buy" });
+      continue;
+    }
+
+    const fit = findBestMixingPair(color, extremes, options.residualThreshold);
+    if (!fit) {
+      classifications.set(color.id, { id: color.id, classification: "buy" });
+      continue;
+    }
+
+    const coverage = adjustedCoverageById.get(color.id) ?? coverageById.get(color.id) ?? 0;
+    const { endpointA, endpointB, t } = fit;
+
+    if (coverage >= options.mixCoveragePercent) {
+      classifications.set(color.id, {
+        id: color.id,
+        classification: "mix",
+        recipe: {
+          targetColorId: color.id,
+          components: [
+            { colorId: endpointA.id, fraction: round4(1 - t) },
+            { colorId: endpointB.id, fraction: round4(t) }
+          ]
+        }
+      });
+    } else {
+      classifications.set(color.id, {
+        id: color.id,
+        classification: "absorb",
+        absorbedIntoId: t < 0.5 ? endpointA.id : endpointB.id
+      });
+    }
+  }
+
+  // Merge dedup-absorbed entries into the final output.
+  for (const [absorbedId, keeperId] of dedupAbsorbs.entries()) {
+    classifications.set(absorbedId, {
+      id: absorbedId,
+      classification: "absorb",
+      absorbedIntoId: keeperId
+    });
+  }
+
+  // Final path compression across the full classification map. A Phase 0
+  // keeper can itself be classified as absorb in Phase 2 (it survived dedup
+  // but turned out to be on a mixing line). Without this walk, colors that
+  // Phase 0 routed to that keeper now point at an absorbed id, and
+  // applyClassification's pixelCount fold throws when it hits the stale
+  // reference.
+  for (const [id, entry] of classifications.entries()) {
+    if (entry.classification !== "absorb" || !entry.absorbedIntoId) continue;
+    let target = entry.absorbedIntoId;
+    const visited = new Set<string>([id]);
+    while (!visited.has(target)) {
+      visited.add(target);
+      const next = classifications.get(target);
+      if (!next || next.classification !== "absorb" || !next.absorbedIntoId) break;
+      target = next.absorbedIntoId;
+    }
+    if (target !== entry.absorbedIntoId) {
+      classifications.set(id, { ...entry, absorbedIntoId: target });
+    }
+  }
+
+  return colors.map((color) => classifications.get(color.id)!);
+}
+
+function dedupNearestNeighbors(
+  colors: ClassifyPaletteInput[],
+  threshold: number
+): { survivors: ClassifyPaletteInput[]; absorbs: Map<string, string> } {
+  const survivors: ClassifyPaletteInput[] = colors.map((color) => ({ ...color }));
+  const absorbs = new Map<string, string>();
+
+  // Repeated nearest-pair merge. Each pass picks the tightest pair; the
+  // lower-pixelCount member absorbs into the higher-pixelCount one. Bounded
+  // by colors.length iterations so worst-case is O(N^3) — fine for palettes
+  // under ~100 colors.
+  while (survivors.length > 1) {
+    let bestDistance = Infinity;
+    let keeperIndex = -1;
+    let absorbedIndex = -1;
+
+    for (let i = 0; i < survivors.length; i += 1) {
+      for (let j = i + 1; j < survivors.length; j += 1) {
+        const a = survivors[i]!;
+        const b = survivors[j]!;
+        const dx = a.rgb[0] - b.rgb[0];
+        const dy = a.rgb[1] - b.rgb[1];
+        const dz = a.rgb[2] - b.rgb[2];
+        const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (distance >= threshold) continue;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          // Keeper = the one with more pixels, or lexicographically smaller
+          // id on ties for deterministic test output.
+          if (
+            a.pixelCount > b.pixelCount ||
+            (a.pixelCount === b.pixelCount && a.id.localeCompare(b.id) <= 0)
+          ) {
+            keeperIndex = i;
+            absorbedIndex = j;
+          } else {
+            keeperIndex = j;
+            absorbedIndex = i;
+          }
+        }
+      }
+    }
+
+    if (bestDistance === Infinity) break;
+
+    const keeper = survivors[keeperIndex]!;
+    const absorbed = survivors[absorbedIndex]!;
+
+    // Path-compress absorbs: if the keeper itself was later absorbed, the
+    // final keeper is the root of the absorb chain. (Cannot happen in this
+    // forward pass, but defensive.)
+    let finalKeeperId = keeper.id;
+    while (absorbs.has(finalKeeperId)) {
+      finalKeeperId = absorbs.get(finalKeeperId)!;
+    }
+
+    absorbs.set(absorbed.id, finalKeeperId);
+    // Redirect any prior absorbers that pointed at `absorbed`. Collect
+    // updates first so we don't mutate the Map during its own iteration.
+    const redirectIds: string[] = [];
+    for (const [id, target] of absorbs.entries()) {
+      if (target === absorbed.id) redirectIds.push(id);
+    }
+    for (const id of redirectIds) {
+      absorbs.set(id, finalKeeperId);
+    }
+
+    keeper.pixelCount += absorbed.pixelCount;
+    survivors.splice(absorbedIndex, 1);
+  }
+
+  // Final safety pass: resolve any remaining transitive chains so every
+  // absorbedId points directly at a survivor (not at another absorbed id).
+  for (const id of Array.from(absorbs.keys())) {
+    let target = absorbs.get(id)!;
+    const visited = new Set<string>([id]);
+    while (absorbs.has(target) && !visited.has(target)) {
+      visited.add(target);
+      target = absorbs.get(target)!;
+    }
+    absorbs.set(id, target);
+  }
+
+  return { survivors, absorbs };
+}
+
+function findBestMixingPair(
+  candidate: ClassifyPaletteInput,
+  buyColors: ClassifyPaletteInput[],
+  residualThreshold: number
+): { endpointA: ClassifyPaletteInput; endpointB: ClassifyPaletteInput; t: number; residual: number } | null {
+  if (buyColors.length < 2) return null;
+
+  let best: {
+    endpointA: ClassifyPaletteInput;
+    endpointB: ClassifyPaletteInput;
+    t: number;
+    residual: number;
+    combinedPixelCount: number;
+  } | null = null;
+
+  for (let i = 0; i < buyColors.length; i += 1) {
+    for (let j = i + 1; j < buyColors.length; j += 1) {
+      const a = buyColors[i]!;
+      const b = buyColors[j]!;
+      const fit = projectOntoSegment(candidate.rgb, a.rgb, b.rgb);
+      if (fit === null) continue;
+      if (fit.residual > residualThreshold) continue;
+
+      const combinedPixelCount = a.pixelCount + b.pixelCount;
+      if (
+        !best ||
+        fit.residual < best.residual - 1e-6 ||
+        (Math.abs(fit.residual - best.residual) < 1e-6 &&
+          combinedPixelCount > best.combinedPixelCount)
+      ) {
+        best = { endpointA: a, endpointB: b, t: fit.t, residual: fit.residual, combinedPixelCount };
+      }
+    }
+  }
+
+  if (!best) return null;
+  return {
+    endpointA: best.endpointA,
+    endpointB: best.endpointB,
+    t: best.t,
+    residual: best.residual
+  };
+}
+
+function projectOntoSegment(
+  point: [number, number, number],
+  a: [number, number, number],
+  b: [number, number, number]
+): { t: number; residual: number } | null {
+  const ab: [number, number, number] = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const denom = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+  if (denom <= 1e-9) return null;
+
+  const ap: [number, number, number] = [point[0] - a[0], point[1] - a[1], point[2] - a[2]];
+  const t = (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / denom;
+  if (t < 0 || t > 1) return null;
+
+  const projected: [number, number, number] = [
+    a[0] + t * ab[0],
+    a[1] + t * ab[1],
+    a[2] + t * ab[2]
+  ];
+  const dx = point[0] - projected[0];
+  const dy = point[1] - projected[1];
+  const dz = point[2] - projected[2];
+  const residual = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  return { t, residual };
+}
+
+export type ApplyClassificationResult = {
+  nextColors: ClassifyPaletteInput[];
+  mixes: MixRecipe[];
+  absorbedCount: number;
+};
+
+export function applyClassification(
+  colors: ClassifyPaletteInput[],
+  classifications: ClassifiedColor[]
+): ApplyClassificationResult {
+  const classificationById = new Map(classifications.map((entry) => [entry.id, entry]));
+  const pixelCountById = new Map(colors.map((color) => [color.id, color.pixelCount]));
+
+  let absorbedCount = 0;
+  for (const color of colors) {
+    const entry = classificationById.get(color.id);
+    if (!entry || entry.classification !== "absorb" || !entry.absorbedIntoId) continue;
+    const keeperId = entry.absorbedIntoId;
+    const keeperPixels = pixelCountById.get(keeperId);
+    if (keeperPixels === undefined) {
+      throw new Error(`Absorbed color ${color.id} references unknown keeper ${keeperId}.`);
+    }
+    pixelCountById.set(keeperId, keeperPixels + color.pixelCount);
+    pixelCountById.delete(color.id);
+    absorbedCount += 1;
+  }
+
+  const nextColors: ClassifyPaletteInput[] = [];
+  const mixes: MixRecipe[] = [];
+  for (const color of colors) {
+    const entry = classificationById.get(color.id);
+    if (!entry) {
+      nextColors.push(color);
+      continue;
+    }
+    if (entry.classification === "absorb") continue;
+    const updatedPixelCount = pixelCountById.get(color.id);
+    if (updatedPixelCount === undefined) continue;
+    nextColors.push({ ...color, pixelCount: updatedPixelCount });
+    if (entry.classification === "mix" && entry.recipe) {
+      mixes.push(entry.recipe);
+    }
+  }
+
+  return { nextColors, mixes, absorbedCount };
+}
+
+export function applyMixesToCoverage(
+  colors: ColorAreaInput[],
+  mixes: MixRecipe[]
+): ColorAreaInput[] {
+  if (mixes.length === 0) return colors.map((color) => ({ ...color }));
+
+  const coverageById = new Map<string, number>();
+  for (const color of colors) {
+    if (!Number.isFinite(color.coveragePercent) || color.coveragePercent < 0) {
+      throw new Error(`Color ${color.id} coveragePercent must be zero or greater.`);
+    }
+    coverageById.set(color.id, color.coveragePercent);
+  }
+
+  const removed = new Set<string>();
+  for (const mix of mixes) {
+    const targetCoverage = coverageById.get(mix.targetColorId);
+    if (targetCoverage === undefined) {
+      throw new Error(`Mix target ${mix.targetColorId} is not in the coverage list.`);
+    }
+    const fractionSum = mix.components.reduce((sum, component) => sum + component.fraction, 0);
+    if (Math.abs(fractionSum - 1) > 1e-3) {
+      throw new Error(
+        `Mix for ${mix.targetColorId} has components summing to ${fractionSum.toFixed(4)}, expected 1.0.`
+      );
+    }
+    for (const component of mix.components) {
+      const componentCoverage = coverageById.get(component.colorId);
+      if (componentCoverage === undefined) {
+        throw new Error(
+          `Mix component ${component.colorId} for ${mix.targetColorId} is not in the coverage list.`
+        );
+      }
+      coverageById.set(component.colorId, componentCoverage + component.fraction * targetCoverage);
+    }
+    removed.add(mix.targetColorId);
+  }
+
+  return colors
+    .filter((color) => !removed.has(color.id))
+    .map((color) => ({ id: color.id, coveragePercent: coverageById.get(color.id)! }));
+}
+
+function round4(value: number): number {
+  return Math.round(value * 10000) / 10000;
 }
