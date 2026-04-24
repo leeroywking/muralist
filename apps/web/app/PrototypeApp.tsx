@@ -23,6 +23,27 @@ import {
   suggestContainersForColors
 } from "@muralist/core";
 import { downloadMaquettePdf } from "./maquettePdf";
+import {
+  OverLimitError,
+  UnauthenticatedError,
+  VersionConflictError,
+  createProject,
+  getMe,
+  getProject,
+  markViewed,
+  updatePalette
+} from "./apiClient";
+import {
+  buildCreateProjectPayload,
+  buildPaletteJson,
+  getUploadLimits,
+  hydrateFromProject,
+  readProjectIdFromSearch,
+  stripExtension,
+  type EditorSnapshot
+} from "./editorPersistence";
+import { blobToBase64, sanitizeUpload, UploadSanitizationError } from "./uploadPipeline";
+import type { UploadLimits } from "@muralist/config";
 
 type PaletteColor = {
   id: string;
@@ -166,6 +187,27 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   const [mixRecipes, setMixRecipes] = useState<MixRecipe[]>([]);
   const [showProSettings, setShowProSettings] = useState(false);
   const [proSettings, setProSettings] = useState<ProSettings>(DEFAULT_PRO_SETTINGS);
+
+  // --- Cloud save / load state --------------------------------------------
+  // The editor stays fully functional for guests; these state slots only
+  // light up when the user is signed in (per docs/plans/web-ui-post-backend.md
+  // §1 step 8 — guest flow must keep working unchanged).
+  const [isSignedIn, setIsSignedIn] = useState<boolean | null>(null);
+  const [uploadLimits, setUploadLimits] = useState<UploadLimits | null>(null);
+  const [sanitizedImageBase64, setSanitizedImageBase64] = useState<string | null>(null);
+  const [thumbnailBase64, setThumbnailBase64] = useState<string | null>(null);
+  // `cloudMode` tracks which save UI to show:
+  //   "idle"   — no palette to save yet (or guest without palette).
+  //   "new"    — signed-in with a palette from upload; button says "Save to my account".
+  //   "loaded" — palette came from `?project=<id>`; button says "Save changes".
+  const [cloudMode, setCloudMode] = useState<"idle" | "new" | "loaded">("idle");
+  const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
+  const [loadedProjectVersion, setLoadedProjectVersion] = useState<number | null>(null);
+  const [projectName, setProjectName] = useState<string>("");
+  const [cloudSaveStatus, setCloudSaveStatus] = useState<string | null>(null);
+  const [cloudSaveError, setCloudSaveError] = useState<string | null>(null);
+  const [versionConflict, setVersionConflict] = useState(false);
+  const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
 
   const selectedBrand =
     catalog.brands.find((brand) => brand.id === selectedBrandId) ?? defaultBrand;
@@ -409,52 +451,183 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     }
   }, [proSettings]);
 
+  // Fetch upload limits once. If the (not-yet-built) /api/upload-limits
+  // endpoint goes live, swap `getUploadLimits` to hit it — the fallback
+  // defaults stay correct for config/upload-limits.yaml in the meantime.
+  useEffect(() => {
+    let cancelled = false;
+    getUploadLimits()
+      .then((limits) => {
+        if (!cancelled) setUploadLimits(limits);
+      })
+      .catch(() => {
+        if (!cancelled) setUploadLimits(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Detect whether the user is signed in. On 401 we stay in guest mode with
+  // the full local-only flow; on success the "Save to my account" affordance
+  // lights up.
+  useEffect(() => {
+    let cancelled = false;
+    getMe()
+      .then(() => {
+        if (!cancelled) setIsSignedIn(true);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof UnauthenticatedError) {
+          setIsSignedIn(false);
+        } else {
+          // Network blip — treat as signed-out so the guest path still works.
+          setIsSignedIn(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // If the URL carries `?project=<id>` AND the user is signed in, hydrate
+  // the editor from the backend. Runs once per (auth, id) tuple.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (isSignedIn !== true) return;
+    const projectId = readProjectIdFromSearch(window.location.search);
+    if (!projectId) return;
+    let cancelled = false;
+    setProjectLoadError(null);
+    (async () => {
+      try {
+        const project = await getProject(projectId);
+        if (cancelled) return;
+        const hydrated = hydrateFromProject(project);
+        setPaletteColors(hydrated.paletteColors);
+        setClassifications(hydrated.classifications);
+        setMixRecipes(hydrated.mixRecipes);
+        setColorFinishOverrides(hydrated.colorFinishOverrides);
+        setColorCoatsOverrides(hydrated.colorCoatsOverrides);
+        setPreviewUrl(hydrated.imageDataUrl);
+        setFlattenedImageUrl(null);
+        sourcePixelsRef.current = null;
+        setFileName(hydrated.name);
+        setProjectName(hydrated.name);
+        setLoadedProjectId(hydrated.projectId);
+        setLoadedProjectVersion(hydrated.version);
+        setCloudMode("loaded");
+        // Bump lastViewedAt so the dashboard sort stays fresh. Fire-and-forget;
+        // we don't need to block hydration on it.
+        markViewed(hydrated.projectId).catch(() => undefined);
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof UnauthenticatedError) {
+          window.location.assign("/signin?returnTo=/");
+          return;
+        }
+        const message =
+          err instanceof Error ? err.message : "Couldn't load project.";
+        if (/404|not.?found/i.test(message)) {
+          setProjectLoadError(
+            "Project not found — it may have been deleted."
+          );
+        } else {
+          setProjectLoadError(`Couldn't load project: ${message}`);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isSignedIn]);
+
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    // TODO(ui-round): wire apps/web/app/uploadPipeline.ts + apiClient.ts
-    // to replace this client-only flow with an API-persisting flow.
+    // Sanitize-first upload pipeline (docs/plans/web-ui-post-backend.md §1 step 9).
+    // The sanitizer enforces the allowlist + long-edge cap; the palette is
+    // extracted from the sanitized pixel data so the preview and the stored
+    // artifact come from the same source of truth.
     const file = event.target.files?.[0];
 
     if (!file) {
       return;
     }
 
-    if (!file.type.startsWith("image/")) {
-      setError("Choose an image file such as PNG, JPG, WEBP, or HEIC.");
+    const limits = uploadLimits;
+    if (!limits) {
+      setError("Upload limits are still loading — try again in a moment.");
       return;
     }
 
-    if (file.size > 15 * 1024 * 1024) {
-      setError("Keep uploads under 15 MB for the browser prototype.");
-      return;
-    }
-
-    const nextPreviewUrl = URL.createObjectURL(file);
-    setPreviewUrl(nextPreviewUrl);
+    const defaultName = stripExtension(file.name);
     setFileName(file.name);
+    setProjectName(defaultName);
     setError(null);
     setSaveMessage("");
+    setCloudSaveStatus(null);
+    setCloudSaveError(null);
+    setVersionConflict(false);
+    setProjectLoadError(null);
     setSelectedColorIds([]);
     setMergeKeeperId("");
     setColorFinishOverrides({});
     setColorCoatsOverrides({});
     setFlattenedImageUrl(null);
     sourcePixelsRef.current = null;
+    setSanitizedImageBase64(null);
+    setThumbnailBase64(null);
+    // A new upload means any previously loaded project is no longer the
+    // subject of the editor — fall back to "new" (or "idle" for guests).
+    setLoadedProjectId(null);
+    setLoadedProjectVersion(null);
 
     startTransition(async () => {
       try {
-        const result = await analyzeImage(file, canvasRef.current);
+        const { sanitized, thumbnail } = await sanitizeUpload(file, limits);
+        // Run the palette extractor against the sanitized bytes so the
+        // swatches we store match what the server has.
+        const sanitizedUrl = URL.createObjectURL(sanitized);
+        setPreviewUrl(sanitizedUrl);
+        const result = await analyzeBlob(sanitized, canvasRef.current);
         setSourceAnalysis(result);
         setPaletteColors(result.colors);
         const canvas = canvasRef.current;
         const ctx = canvas?.getContext("2d", { willReadFrequently: true });
         if (canvas && ctx) {
           const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          sourcePixelsRef.current = { data: new Uint8ClampedArray(img.data), width: canvas.width, height: canvas.height };
+          sourcePixelsRef.current = {
+            data: new Uint8ClampedArray(img.data),
+            width: canvas.width,
+            height: canvas.height
+          };
         }
+
+        // Stash the base64 artifacts so the Save button doesn't have to
+        // re-run sanitization — uploads a 25 KB JPEG, fine to keep in
+        // memory while the user tweaks.
+        const [imageBase64, thumbBase64] = await Promise.all([
+          blobToBase64(sanitized),
+          blobToBase64(thumbnail)
+        ]);
+        setSanitizedImageBase64(imageBase64);
+        setThumbnailBase64(thumbBase64);
+        setCloudMode(isSignedIn ? "new" : "idle");
       } catch (analysisError) {
         setSourceAnalysis(null);
         setPaletteColors([]);
-        setError(analysisError instanceof Error ? analysisError.message : "Image analysis failed.");
+        setSanitizedImageBase64(null);
+        setThumbnailBase64(null);
+        setCloudMode("idle");
+        if (analysisError instanceof UploadSanitizationError) {
+          setError(analysisError.message);
+        } else {
+          setError(
+            analysisError instanceof Error
+              ? analysisError.message
+              : "Image analysis failed."
+          );
+        }
       }
     });
   }
@@ -702,6 +875,113 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     window.localStorage.setItem(savedMergePlanKey, JSON.stringify(nextSavedPlan));
     setSavedMergePlan(nextSavedPlan);
     setSaveMessage("Merged choices saved on this device.");
+  }
+
+  function buildEditorSnapshot(): EditorSnapshot {
+    return {
+      paletteColors,
+      classifications,
+      mixRecipes,
+      colorFinishOverrides,
+      colorCoatsOverrides
+    };
+  }
+
+  function formatCloudSaveError(err: unknown): string {
+    if (err instanceof OverLimitError) {
+      return "You've hit your free-tier limit of 3 projects — delete one or upgrade.";
+    }
+    if (err instanceof UnauthenticatedError) {
+      return "Your session expired — please sign in again.";
+    }
+    if (err instanceof Error) return err.message;
+    return "Couldn't save project.";
+  }
+
+  async function handleCloudSaveNew(options: { redirectOnSuccess?: boolean } = {}) {
+    if (!sanitizedImageBase64 || !thumbnailBase64 || paletteColors.length === 0) {
+      setCloudSaveError("Nothing to save yet — upload an image first.");
+      return;
+    }
+    setCloudSaveStatus("Saving…");
+    setCloudSaveError(null);
+    setVersionConflict(false);
+    const nameTrimmed = projectName.trim();
+    const safeName = nameTrimmed.length > 0 ? nameTrimmed : stripExtension(fileName) || "Untitled project";
+    try {
+      const payload = buildCreateProjectPayload({
+        name: safeName,
+        snapshot: buildEditorSnapshot(),
+        sanitizedImageBase64,
+        thumbnailBase64
+      });
+      const created = await createProject(payload);
+      setCloudSaveStatus("Saved ✓");
+      setLoadedProjectId(created.id);
+      setLoadedProjectVersion(created.version);
+      setCloudMode("loaded");
+      if (options.redirectOnSuccess && typeof window !== "undefined") {
+        window.location.assign("/projects");
+      }
+    } catch (err) {
+      if (err instanceof UnauthenticatedError) {
+        if (typeof window !== "undefined") {
+          window.location.assign("/signin?returnTo=/");
+        }
+        return;
+      }
+      setCloudSaveStatus(null);
+      setCloudSaveError(formatCloudSaveError(err));
+    }
+  }
+
+  async function handleCloudSaveChanges() {
+    if (!loadedProjectId || loadedProjectVersion === null) return;
+    if (paletteColors.length === 0) {
+      setCloudSaveError("Nothing to save — the palette is empty.");
+      return;
+    }
+    setCloudSaveStatus("Saving…");
+    setCloudSaveError(null);
+    setVersionConflict(false);
+    try {
+      const palette = buildPaletteJson(buildEditorSnapshot());
+      await updatePalette(loadedProjectId, palette, loadedProjectVersion);
+      setCloudSaveStatus("Saved ✓");
+      setLoadedProjectVersion(loadedProjectVersion + 1);
+    } catch (err) {
+      setCloudSaveStatus(null);
+      if (err instanceof VersionConflictError) {
+        setVersionConflict(true);
+        setCloudSaveError(
+          "Another tab or session saved this project — reload to see the latest, or save as a new copy."
+        );
+        return;
+      }
+      if (err instanceof UnauthenticatedError) {
+        if (typeof window !== "undefined") {
+          window.location.assign("/signin?returnTo=/");
+        }
+        return;
+      }
+      setCloudSaveError(formatCloudSaveError(err));
+    }
+  }
+
+  function handleReloadProject() {
+    if (typeof window !== "undefined") {
+      window.location.reload();
+    }
+  }
+
+  async function handleSaveAsCopy() {
+    // Break the link to the existing project so the user gets a fresh one
+    // with their current in-memory palette state.
+    setLoadedProjectId(null);
+    setLoadedProjectVersion(null);
+    setCloudMode("new");
+    setVersionConflict(false);
+    await handleCloudSaveNew();
   }
 
   function restoreSavedChoices() {
@@ -984,6 +1264,17 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 >
                   Save Merge Choices
                 </button>
+                <CloudSaveControls
+                  isSignedIn={isSignedIn}
+                  cloudMode={cloudMode}
+                  paletteColorCount={paletteColors.length}
+                  hasSanitizedImage={!!sanitizedImageBase64}
+                  projectName={projectName}
+                  onProjectNameChange={setProjectName}
+                  cloudSaveStatus={cloudSaveStatus}
+                  onSaveNew={() => handleCloudSaveNew({ redirectOnSuccess: false })}
+                  onSaveChanges={handleCloudSaveChanges}
+                />
                 <button
                   className="pdf-button"
                   disabled={!fieldSheetModel || isGeneratingPdf}
@@ -1011,6 +1302,48 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
 
             {saveMessage ? <p className="status">{saveMessage}</p> : null}
             {pdfError ? <p className="status error">{pdfError}</p> : null}
+            {cloudSaveStatus && cloudSaveStatus !== "Saving…" ? (
+              <p className="status">
+                {cloudSaveStatus}
+                {loadedProjectId ? (
+                  <>
+                    {" · "}
+                    <a href="/projects">View in Projects</a>
+                  </>
+                ) : null}
+              </p>
+            ) : null}
+            {cloudSaveStatus === "Saving…" ? (
+              <p className="status">Saving…</p>
+            ) : null}
+            {cloudSaveError ? (
+              <p className="status error" role="alert">
+                {cloudSaveError}
+              </p>
+            ) : null}
+            {versionConflict ? (
+              <div className="status cloud-conflict-actions" role="alert">
+                <button
+                  className="save-button"
+                  onClick={handleReloadProject}
+                  type="button"
+                >
+                  Reload
+                </button>
+                <button
+                  className="save-button"
+                  onClick={handleSaveAsCopy}
+                  type="button"
+                >
+                  Save as new
+                </button>
+              </div>
+            ) : null}
+            {projectLoadError ? (
+              <p className="status error" role="alert">
+                {projectLoadError}
+              </p>
+            ) : null}
 
             <div className="selection-strip">
               {selectedColorIds.length > 0 ? (
@@ -1295,6 +1628,21 @@ function GridPreview({
 async function analyzeImage(file: File, canvas: HTMLCanvasElement | null) {
   const imageUrl = URL.createObjectURL(file);
 
+  try {
+    const image = await loadImage(imageUrl);
+    return analyzeLoadedImage(image, canvas);
+  } finally {
+    URL.revokeObjectURL(imageUrl);
+  }
+}
+
+/**
+ * Same shape as `analyzeImage` but accepts a Blob — used after
+ * `sanitizeUpload` has re-encoded the upload into a capped JPEG so the
+ * palette reflects the stored pixels, not the user's original file.
+ */
+async function analyzeBlob(blob: Blob, canvas: HTMLCanvasElement | null) {
+  const imageUrl = URL.createObjectURL(blob);
   try {
     const image = await loadImage(imageUrl);
     return analyzeLoadedImage(image, canvas);
@@ -1602,6 +1950,88 @@ function describeMixRecipe(recipe: MixRecipe, palette: PaletteColor[]): string {
       return `${percent}% ${hex}`;
     })
     .join(" + ");
+}
+
+function CloudSaveControls({
+  isSignedIn,
+  cloudMode,
+  paletteColorCount,
+  hasSanitizedImage,
+  projectName,
+  onProjectNameChange,
+  cloudSaveStatus,
+  onSaveNew,
+  onSaveChanges
+}: {
+  isSignedIn: boolean | null;
+  cloudMode: "idle" | "new" | "loaded";
+  paletteColorCount: number;
+  hasSanitizedImage: boolean;
+  projectName: string;
+  onProjectNameChange: (next: string) => void;
+  cloudSaveStatus: string | null;
+  onSaveNew: () => void;
+  onSaveChanges: () => void;
+}) {
+  if (isSignedIn === null) {
+    // Still probing the session — render a neutral placeholder so the
+    // toolbar layout doesn't jump once auth resolves.
+    return (
+      <button className="save-button" type="button" disabled aria-busy="true">
+        Checking sign-in…
+      </button>
+    );
+  }
+
+  if (!isSignedIn) {
+    return (
+      <a className="save-button cloud-signin-link" href="/signin?returnTo=/">
+        Sign in to save
+      </a>
+    );
+  }
+
+  const saving = cloudSaveStatus === "Saving…";
+
+  if (cloudMode === "loaded") {
+    return (
+      <button
+        className="save-button"
+        disabled={saving || paletteColorCount === 0}
+        onClick={onSaveChanges}
+        type="button"
+        title="Save changes to the currently loaded project."
+      >
+        {saving ? "Saving…" : "Save changes"}
+      </button>
+    );
+  }
+
+  const canSave = paletteColorCount > 0 && hasSanitizedImage;
+
+  return (
+    <div className="cloud-save-group">
+      <label className="field field-inline cloud-save-name">
+        <span>Project name</span>
+        <input
+          type="text"
+          value={projectName}
+          onChange={(event) => onProjectNameChange(event.target.value)}
+          placeholder="Untitled project"
+          maxLength={200}
+        />
+      </label>
+      <button
+        className="save-button"
+        disabled={!canSave || saving}
+        onClick={onSaveNew}
+        type="button"
+        title="Save this palette and artwork to your Muralist account."
+      >
+        {saving ? "Saving…" : "Save to my account"}
+      </button>
+    </div>
+  );
 }
 
 function ProSettingsPanel({

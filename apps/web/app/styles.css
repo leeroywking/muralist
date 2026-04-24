@@ -1445,3 +1445,33 @@ h1 {
 .project-tile-restore:hover {
   border-color: rgba(46, 129, 98, 0.5);
 }
+
+/* Cloud save (editor → backend) -------------------------------------- */
+.cloud-save-group {
+  display: inline-flex;
+  gap: 0.5rem;
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.cloud-save-name {
+  margin: 0;
+  min-width: 14rem;
+}
+
+.cloud-save-name input {
+  margin-top: 0.25rem;
+}
+
+.cloud-signin-link {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cloud-conflict-actions {
+  display: inline-flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
