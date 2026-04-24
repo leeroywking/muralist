@@ -78,10 +78,10 @@ const base64ImageSchema = z
   .min(1)
   // Generous character cap — the byte-accurate per-artifact check lives in
   // imageValidation.ts (reads maxBytes from config/upload-limits.yaml). This
-  // just rejects obviously-oversized payloads before base64 decode. 200 KB
-  // sanitized bytes → ~273k base64 chars; 300k gives padding headroom. Raise
-  // if the yaml cap goes past ~225 KB.
-  .max(300_000)
+  // just rejects obviously-oversized payloads before base64 decode. 400 KB
+  // sanitized bytes → ~547k base64 chars; 600k gives padding headroom. Raise
+  // if the yaml cap goes past ~450 KB.
+  .max(600_000)
   .regex(/^[A-Za-z0-9+/]+={0,2}$/, "payload must be base64");
 
 export const createProjectSchema = z.object({
