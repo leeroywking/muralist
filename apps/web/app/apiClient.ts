@@ -195,6 +195,11 @@ function resolveBaseUrl(): string {
  * Reads the `csrf-token` cookie set by `@fastify/csrf-protection`. Returns
  * `null` when the cookie is absent (e.g. guest) or when running outside a
  * browser.
+ *
+ * Kept for tests and same-origin setups. In prod, the web origin
+ * (muraliste.com) cannot read cookies set on the API origin
+ * (api.muraliste.com), so the in-memory token returned by
+ * `ensureCsrfToken` is the real source of truth.
  */
 export function readCsrfToken(documentLike?: { cookie: string }): string | null {
   const doc =
@@ -216,6 +221,58 @@ export function readCsrfToken(documentLike?: { cookie: string }): string | null 
     }
   }
   return null;
+}
+
+/**
+ * In-memory CSRF token cache. The signed secret lives in an api-origin
+ * cookie the browser sends automatically on credentialed fetches; the
+ * *token* we must echo in `X-CSRF-Token` comes back in the body of
+ * `GET /csrf-token`. document.cookie can't see api-subdomain cookies, so
+ * we hold the token in memory instead of re-reading it per request.
+ */
+let cachedCsrfToken: string | null = null;
+let inflightCsrfFetch: Promise<string | null> | null = null;
+
+/** Test hook — reset the in-memory cache. */
+export function __resetCsrfTokenCache(): void {
+  cachedCsrfToken = null;
+  inflightCsrfFetch = null;
+}
+
+async function fetchCsrfToken(
+  baseUrl: string,
+  fetchImpl: typeof fetch
+): Promise<string | null> {
+  try {
+    const response = await fetchImpl(`${baseUrl}/csrf-token`, {
+      method: "GET",
+      credentials: "include"
+    });
+    if (!response.ok) return null;
+    const body = (await response.json().catch(() => null)) as
+      | { token?: unknown }
+      | null;
+    const token = body && typeof body.token === "string" ? body.token : null;
+    return token;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureCsrfToken(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  forceRefresh = false
+): Promise<string | null> {
+  if (!forceRefresh && cachedCsrfToken) return cachedCsrfToken;
+  if (!inflightCsrfFetch) {
+    inflightCsrfFetch = fetchCsrfToken(baseUrl, fetchImpl).then((token) => {
+      cachedCsrfToken = token;
+      inflightCsrfFetch = null;
+      return token;
+    });
+  }
+  return inflightCsrfFetch;
 }
 
 export type ApiRequestOptions = {
@@ -257,6 +314,13 @@ function throwForStatus(status: number, body: unknown): never {
   throw new ApiError(status, body);
 }
 
+function isCsrfError(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const maybe = (body as { error?: unknown; code?: unknown }).error;
+  const code = typeof maybe === "string" ? maybe : undefined;
+  return typeof code === "string" && code.startsWith("FST_CSRF_");
+}
+
 export async function apiRequest<T = unknown>(
   path: string,
   options: ApiRequestOptions = {}
@@ -264,31 +328,63 @@ export async function apiRequest<T = unknown>(
   const method = (options.method ?? "GET").toUpperCase();
   const fetchImpl = options.fetchImpl ?? fetch;
   const baseUrl = options.baseUrl ?? resolveBaseUrl();
+  const isMutating = MUTATING_METHODS.has(method);
 
-  const headers: Record<string, string> = { ...(options.headers ?? {}) };
+  async function buildHeaders(forceRefreshCsrf: boolean): Promise<Record<string, string>> {
+    const headers: Record<string, string> = { ...(options.headers ?? {}) };
+    if (options.body !== undefined && !(options.body instanceof Blob) && typeof options.body !== "string") {
+      headers["content-type"] = headers["content-type"] ?? "application/json";
+    }
+    if (isMutating) {
+      // When the caller supplies a `documentLike` cookie jar (tests,
+      // same-origin setups), prefer the cookie read — it avoids an
+      // unmocked `/csrf-token` fetch. In real browsers the web origin
+      // can't read api-subdomain cookies, so fall through to the
+      // in-memory token seeded by `ensureCsrfToken`.
+      let token: string | null | undefined;
+      if (options.documentLike) {
+        token = readCsrfToken(options.documentLike);
+      } else {
+        token = await ensureCsrfToken(baseUrl, fetchImpl, forceRefreshCsrf);
+        if (!token) token = readCsrfToken();
+      }
+      if (token) headers["x-csrf-token"] = token;
+    }
+    return headers;
+  }
+
   let body: BodyInit | undefined;
   if (options.body !== undefined) {
     if (options.body instanceof Blob || typeof options.body === "string") {
       body = options.body as BodyInit;
     } else {
-      headers["content-type"] = headers["content-type"] ?? "application/json";
       body = JSON.stringify(options.body);
     }
   }
 
-  if (MUTATING_METHODS.has(method)) {
-    const token = readCsrfToken(options.documentLike);
-    if (token) {
-      headers["x-csrf-token"] = token;
-    }
+  async function doFetch(forceRefreshCsrf: boolean): Promise<Response> {
+    const headers = await buildHeaders(forceRefreshCsrf);
+    return fetchImpl(`${baseUrl}${path}`, {
+      method,
+      credentials: "include",
+      headers,
+      body
+    });
   }
 
-  const response = await fetchImpl(`${baseUrl}${path}`, {
-    method,
-    credentials: "include",
-    headers,
-    body
-  });
+  let response = await doFetch(false);
+
+  // If we get a CSRF failure, the cached token may be stale (server
+  // restarted, secret cookie evicted, token rotated). Refresh once and
+  // retry before surfacing the error.
+  if (isMutating && response.status === 403) {
+    const peeked = response.clone();
+    const peekedBody = await readBody(peeked);
+    if (isCsrfError(peekedBody)) {
+      cachedCsrfToken = null;
+      response = await doFetch(true);
+    }
+  }
 
   if (options.rawResponse) {
     if (!response.ok) {
@@ -311,6 +407,17 @@ export async function apiRequest<T = unknown>(
 
 export function getMe(options: ApiRequestOptions = {}): Promise<Me> {
   return apiRequest<Me>("/me", options);
+}
+
+export async function updateProSettings(
+  patch: ProSettings,
+  options: ApiRequestOptions = {}
+): Promise<void> {
+  await apiRequest<void>("/me/pro-settings", {
+    ...options,
+    method: "PATCH",
+    body: patch
+  });
 }
 
 export async function listProjects(

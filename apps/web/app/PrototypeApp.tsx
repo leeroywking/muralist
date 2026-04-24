@@ -31,7 +31,9 @@ import {
   getMe,
   getProject,
   markViewed,
-  updatePalette
+  updatePalette,
+  updateProSettings,
+  type Me
 } from "./apiClient";
 import {
   buildCreateProjectPayload,
@@ -160,6 +162,12 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const sourcePixelsRef = useRef<{ data: Uint8ClampedArray; width: number; height: number } | null>(null);
+  // `proSettingsHydratedRef` flips to true once /me has populated proSettings
+  // so the save-back effect doesn't PATCH the default values before the real
+  // server values arrive. `proSettingsSkipNextPushRef` suppresses the PATCH
+  // that would otherwise fire on the setState triggered by hydration itself.
+  const proSettingsHydratedRef = useRef(false);
+  const proSettingsSkipNextPushRef = useRef(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [flattenedImageUrl, setFlattenedImageUrl] = useState<string | null>(null);
   const [fileName, setFileName] = useState("");
@@ -409,29 +417,30 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     return paletteColors.filter((color) => selectedColorIds.includes(color.id));
   }, [paletteColors, selectedColorIds]);
 
+  // Local-only persistence (savedMergePlan + proSettings) only runs while
+  // the user is signed OUT. For signed-in users the server is the source of
+  // truth — proSettings hydrate from /me below and save back via
+  // PATCH /me/pro-settings, and the "save merged choices on this device"
+  // button is hidden in favor of "Save to my account". Running both paths
+  // at once lets localStorage silently override server state.
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
+    if (typeof window === "undefined") return;
+    if (isSignedIn !== false) return;
 
     const saved = window.localStorage.getItem(savedMergePlanKey);
-
-    if (!saved) {
-      return;
-    }
-
+    if (!saved) return;
     try {
       const parsed = JSON.parse(saved) as SavedMergePlan;
       setSavedMergePlan(parsed);
     } catch {
       window.localStorage.removeItem(savedMergePlanKey);
     }
-  }, []);
+  }, [isSignedIn]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
+    if (typeof window === "undefined") return;
+    if (isSignedIn !== false) return;
+
     const saved = window.localStorage.getItem(proSettingsKey);
     if (!saved) return;
     try {
@@ -440,16 +449,18 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     } catch {
       window.localStorage.removeItem(proSettingsKey);
     }
-  }, []);
+  }, [isSignedIn]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (isSignedIn !== false) return;
+
     if (proSettings.rememberOnDevice) {
       window.localStorage.setItem(proSettingsKey, JSON.stringify(proSettings));
     } else {
       window.localStorage.removeItem(proSettingsKey);
     }
-  }, [proSettings]);
+  }, [proSettings, isSignedIn]);
 
   // Fetch upload limits once. If the (not-yet-built) /api/upload-limits
   // endpoint goes live, swap `getUploadLimits` to hit it — the fallback
@@ -470,12 +481,24 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
 
   // Detect whether the user is signed in. On 401 we stay in guest mode with
   // the full local-only flow; on success the "Save to my account" affordance
-  // lights up.
+  // lights up and proSettings hydrate from the server.
   useEffect(() => {
     let cancelled = false;
     getMe()
-      .then(() => {
-        if (!cancelled) setIsSignedIn(true);
+      .then((me: Me) => {
+        if (cancelled) return;
+        setIsSignedIn(true);
+        // Server proSettings are the source of truth for signed-in users.
+        // Merge onto DEFAULT_PRO_SETTINGS so any field the server hasn't
+        // saved yet (e.g. rememberOnDevice, which is device-only) keeps its
+        // default instead of going undefined.
+        proSettingsSkipNextPushRef.current = true;
+        setProSettings((current) => ({
+          ...DEFAULT_PRO_SETTINGS,
+          ...current,
+          ...(me.proSettings ?? {})
+        }));
+        proSettingsHydratedRef.current = true;
       })
       .catch((err) => {
         if (cancelled) return;
@@ -490,6 +513,36 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       cancelled = true;
     };
   }, []);
+
+  // Push proSettings changes back to the server for signed-in users. Runs
+  // AFTER /me hydration (gated by proSettingsHydratedRef) so the initial
+  // setProSettings from /me doesn't trigger a redundant PATCH.
+  useEffect(() => {
+    if (isSignedIn !== true) return;
+    if (!proSettingsHydratedRef.current) return;
+    if (proSettingsSkipNextPushRef.current) {
+      proSettingsSkipNextPushRef.current = false;
+      return;
+    }
+    const controller = new AbortController();
+    updateProSettings({
+      autoCombineSensitivity: proSettings.autoCombineSensitivity,
+      residualThreshold: proSettings.residualThreshold,
+      mixCoveragePercent: proSettings.mixCoveragePercent
+    }).catch((err) => {
+      if (controller.signal.aborted) return;
+      // Don't surface transient save errors to the user — the next change
+      // will try again, and the local state stays correct in the meantime.
+      // eslint-disable-next-line no-console
+      console.warn("updateProSettings failed", err);
+    });
+    return () => controller.abort();
+  }, [
+    proSettings.autoCombineSensitivity,
+    proSettings.residualThreshold,
+    proSettings.mixCoveragePercent,
+    isSignedIn
+  ]);
 
   // If the URL carries `?project=<id>` AND the user is signed in, hydrate
   // the editor from the backend. Runs once per (auth, id) tuple.
@@ -883,6 +936,12 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     if (typeof window === "undefined" || paletteColors.length === 0) {
       return;
     }
+    // Defense-in-depth: the button is hidden for signed-in users, but if a
+    // signed-in caller somehow reaches this function, skip localStorage so
+    // the server stays authoritative.
+    if (isSignedIn === true) {
+      return;
+    }
 
     const nextSavedPlan: SavedMergePlan = {
       savedAt: new Date().toISOString(),
@@ -1079,6 +1138,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
         onToggle={() => setShowProSettings((current) => !current)}
         settings={proSettings}
         onSettingsChange={setProSettings}
+        isSignedIn={isSignedIn}
       />
 
       <section className="workspace-grid">
@@ -1247,7 +1307,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
               <div className="merge-toolbar-copy">
                 <strong>Selected chips</strong>
                 <span>Pick 2 or more colors, choose the keeper chip, then merge them.</span>
-                {savedMergePlan ? (
+                {isSignedIn === false && savedMergePlan ? (
                   <small className="saved-note">
                     Last saved {formatSavedAt(savedMergePlan.savedAt)}
                     {savedMergePlan.fileName ? ` from ${savedMergePlan.fileName}` : ""}.
@@ -1287,14 +1347,17 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 >
                   Auto-combine similar colors
                 </button>
-                <button
-                  className="save-button"
-                  disabled={paletteColors.length === 0}
-                  onClick={saveMergedChoices}
-                  type="button"
-                >
-                  Save Merge Choices
-                </button>
+                {isSignedIn === false ? (
+                  <button
+                    className="save-button"
+                    disabled={paletteColors.length === 0}
+                    onClick={saveMergedChoices}
+                    type="button"
+                    title="Saved to this device only. Sign in to save to your account."
+                  >
+                    Save Merge Choices
+                  </button>
+                ) : null}
                 <CloudSaveControls
                   isSignedIn={isSignedIn}
                   cloudMode={cloudMode}
@@ -1323,7 +1386,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 >
                   Print (fallback)
                 </button>
-                {savedMergePlan ? (
+                {isSignedIn === false && savedMergePlan ? (
                   <button className="restore-button" onClick={restoreSavedChoices} type="button">
                     Restore Saved Palette
                   </button>
@@ -2069,12 +2132,14 @@ function ProSettingsPanel({
   open,
   onToggle,
   settings,
-  onSettingsChange
+  onSettingsChange,
+  isSignedIn
 }: {
   open: boolean;
   onToggle: () => void;
   settings: ProSettings;
   onSettingsChange: (next: ProSettings) => void;
+  isSignedIn: boolean | null;
 }) {
   function setSensitivity(next: AutoCombineSensitivity) {
     if (next === "custom") {
@@ -2184,10 +2249,16 @@ function ProSettingsPanel({
             </label>
           </div>
 
-          <label className="pro-settings-remember">
-            <input type="checkbox" checked={settings.rememberOnDevice} onChange={toggleRemember} />
-            <span>Remember these settings on this device</span>
-          </label>
+          {isSignedIn === true ? (
+            <p className="pro-settings-sync-note">
+              Settings sync to your account.
+            </p>
+          ) : (
+            <label className="pro-settings-remember">
+              <input type="checkbox" checked={settings.rememberOnDevice} onChange={toggleRemember} />
+              <span>Remember these settings on this device</span>
+            </label>
+          )}
         </div>
       ) : null}
     </section>

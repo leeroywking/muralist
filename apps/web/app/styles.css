@@ -1096,6 +1096,12 @@ h1 {
   font-size: 0.9rem;
   color: var(--ink);
 }
+.pro-settings-sync-note {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-style: italic;
+}
 
 .swatch-card-mix {
   border: 1px solid rgba(201, 93, 28, 0.55);
