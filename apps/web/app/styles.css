@@ -1232,3 +1232,216 @@ h1 {
 .header-session-loading {
   visibility: hidden;
 }
+
+/* ---- Projects dashboard ------------------------------------------------ */
+.projects-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.5rem;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: var(--card);
+  box-shadow: 0 18px 42px var(--shadow);
+  margin-top: 1rem;
+}
+.projects-loading {
+  margin: 0;
+  color: var(--muted);
+  font-style: italic;
+}
+.projects-error {
+  margin: 0;
+  color: #8a1d1d;
+  font-size: 0.95rem;
+}
+.projects-overlimit-banner {
+  background: rgba(240, 161, 61, 0.18);
+  border: 1px solid rgba(201, 93, 28, 0.35);
+  color: #4f2a0b;
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+.projects-header {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.projects-title {
+  margin: 0;
+  font-size: 1.8rem;
+}
+.projects-subtitle {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.projects-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.projects-status-toggle {
+  display: inline-flex;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.7);
+}
+.projects-status-tab {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+}
+.projects-status-tab.is-active {
+  background: linear-gradient(135deg, var(--accent), #dd7d33);
+  color: white;
+}
+.projects-new-button {
+  display: inline-block;
+  padding: 0.65rem 1rem;
+  border-radius: 12px;
+  border: 0;
+  background: linear-gradient(135deg, var(--accent), #dd7d33);
+  color: white;
+  text-decoration: none;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.projects-new-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  background: rgba(23, 35, 26, 0.18);
+  color: rgba(23, 35, 26, 0.5);
+}
+.projects-empty {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: start;
+  padding: 2rem;
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--muted);
+}
+.projects-empty p {
+  margin: 0;
+}
+.projects-cta {
+  display: inline-block;
+  padding: 0.65rem 1rem;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--accent), #dd7d33);
+  color: white;
+  text-decoration: none;
+  font-weight: 600;
+}
+.projects-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+.project-tile {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 6px 16px rgba(17, 17, 17, 0.06);
+}
+.project-tile-open {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.project-tile-thumb-frame {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: #f1ece3;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+.project-tile-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.project-tile-thumb-empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.project-tile-body {
+  padding: 0.75rem 0.9rem 0.9rem;
+}
+.project-tile-name {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-tile-meta {
+  margin: 0.25rem 0 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.project-tile-delete {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 999px;
+  border: 1px solid rgba(23, 35, 26, 0.18);
+  background: rgba(255, 255, 255, 0.92);
+  color: #8a1d1d;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.project-tile-delete:hover {
+  background: #fff;
+  border-color: rgba(138, 29, 29, 0.4);
+}
+.project-tile-restore {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.project-tile-restore:hover {
+  border-color: rgba(46, 129, 98, 0.5);
+}
