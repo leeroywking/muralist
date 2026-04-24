@@ -44,7 +44,8 @@ export type ProjectTile = {
   /** base64-encoded thumbnail (no data URL prefix). */
   thumbnail: string;
   lastViewedAt: string;
-  createdAt: string;
+  /** Not currently returned by the list endpoint; reserved for future use. */
+  createdAt?: string;
   status: ProjectStatus;
 };
 
@@ -312,12 +313,18 @@ export function getMe(options: ApiRequestOptions = {}): Promise<Me> {
   return apiRequest<Me>("/me", options);
 }
 
-export function listProjects(
+export async function listProjects(
   status?: ProjectStatus,
   options: ApiRequestOptions = {}
 ): Promise<ProjectTile[]> {
   const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
-  return apiRequest<ProjectTile[]>(`/projects${suffix}`, options);
+  // Server returns `{ projects: [...] }`; unwrap so callers get a plain array.
+  const body = await apiRequest<{ projects: ProjectTile[] } | ProjectTile[]>(
+    `/projects${suffix}`,
+    options
+  );
+  if (Array.isArray(body)) return body;
+  return body?.projects ?? [];
 }
 
 export function getProject(
@@ -491,8 +498,12 @@ export function signInSocial(
  * POST /api/auth/sign-out — clears the Better Auth session cookie.
  */
 export async function signOut(options: ApiRequestOptions = {}): Promise<void> {
+  // Better Auth's sign-out route runs through Fastify's JSON body parser,
+  // which rejects empty bodies with FST_ERR_CTP_EMPTY_JSON_BODY. Send an
+  // empty object so the parser succeeds; the endpoint ignores the payload.
   await apiRequest<void>("/api/auth/sign-out", {
     ...options,
-    method: "POST"
+    method: "POST",
+    body: {}
   });
 }
