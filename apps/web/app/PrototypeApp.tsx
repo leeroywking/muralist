@@ -518,6 +518,37 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
         setLoadedProjectId(hydrated.projectId);
         setLoadedProjectVersion(hydrated.version);
         setCloudMode("loaded");
+        // Rehydrate source dimensions + pixel buffer from the stored image
+        // so the field sheet / PDF / flattened preview render on load.
+        // Unlike upload, we do NOT re-cluster the image — the palette is
+        // authoritative from the backend. We only need dimensions and the
+        // raw pixel buffer for the flattened-preview painter.
+        // Fire-and-forget: if decoding fails, the editor still has the
+        // palette and preview image.
+        loadImage(hydrated.imageDataUrl)
+          .then((image) => {
+            if (cancelled) return;
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+            const { width, height } = getScaledDimensions(
+              image.naturalWidth,
+              image.naturalHeight
+            );
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext("2d", { willReadFrequently: true });
+            if (!ctx) return;
+            ctx.clearRect(0, 0, width, height);
+            ctx.drawImage(image, 0, 0, width, height);
+            setSourceAnalysis({ width, height, colors: [] });
+            const img = ctx.getImageData(0, 0, width, height);
+            sourcePixelsRef.current = {
+              data: new Uint8ClampedArray(img.data),
+              width,
+              height
+            };
+          })
+          .catch(() => undefined);
         // Bump lastViewedAt so the dashboard sort stays fresh. Fire-and-forget;
         // we don't need to block hydration on it.
         markViewed(hydrated.projectId).catch(() => undefined);
