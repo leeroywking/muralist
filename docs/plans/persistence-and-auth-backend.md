@@ -257,3 +257,94 @@ No user-visible UI work in this round, so the AGENTS.md "preview must load the n
 4. **Account-deletion scheduling.** Plan uses lazy evaluation on `/me` (step 24). If you want a firmer guarantee (purge runs on time even for users who never sign in again), we'd add a scheduled job; flagging because it's a meaningful architecture choice.
 5. **CSRF cookie lifetime.** Default is per-session. Shorter (rotating mid-session) is more defensive but adds complexity; flagging for later hardening.
 6. **Better Auth secret rotation.** Prototype uses a single `BETTER_AUTH_SECRET`; rotation strategy and downtime impact are open for production hardening.
+
+## 6. Session Handover — 2026-04-23 / 2026-04-24
+
+Work shipped beyond the three-PR plan above, captured so the next session
+can pick up cold. All commits land on `main` via `feat/persistence-auth-backend`
+(merged fast-forward `2026-04-24`).
+
+### Deploy topology
+
+- DO App Platform app `9d86ef02-3b5c-4df4-a9cb-d8c8abbbc4ce` (`muralist-api`).
+- Both components (`api` Fastify service + `web` Next static site) now
+  track `branch: main` with `deploy_on_push: true` per `.do/app.yaml`.
+  The spec was applied via `doctl apps update --spec .do/app.yaml` at the
+  switchover — DO does NOT read the yaml from git automatically.
+- Domains: `muraliste.com` → web, `api.muraliste.com` → api (routing via
+  `ingress.rules`). Cloudflare fronts both; api cookies are scoped to
+  `api.muraliste.com`.
+- Mongo: DO Managed MongoDB cluster
+  `201ae840-f9d9-4eff-bfac-9340d35412b2`, trusted-sources allowlist holds
+  only the app UUID (`9d86ef02-…`).
+
+### What actually shipped this round beyond the base plan
+
+- **Sign-in UI** (`apps/web/app/signin/page.tsx`,
+  `apps/web/app/SignInButtons.tsx`, `apps/web/app/HeaderSessionLink.tsx`).
+  Google live; Apple/Facebook/Adobe buttons present but greyed until
+  credentials land (`docs/OAUTH_PROVIDER_SETUP.md`).
+- **Projects dashboard** (`apps/web/app/projects/page.tsx`,
+  `apps/web/app/ProjectsDashboard.tsx`). Tile grid, delete with 14-day
+  trash copy, over-limit banner, empty state.
+- **Editor ↔ backend wiring** (`apps/web/app/editorPersistence.ts`,
+  editor integration in `apps/web/app/PrototypeApp.tsx`). Upload →
+  sanitize → cloud-save; `?project=<id>` hydration; `If-Match`
+  version-conditional palette updates; 409 reload/save-as-new UI.
+- **Site nav**: `Projects` link in the header for signed-in users.
+
+### Fixes landed this session (post-compaction)
+
+- **`/projects` envelope** — client expected a bare array, server returns
+  `{ projects: […] }`. `listProjects` now unwraps.
+- **Sign-out 400** — Better Auth's `/api/auth/sign-out` goes through
+  Fastify's JSON parser which rejects empty bodies. Client now sends `{}`.
+- **CSRF cross-subdomain** — web origin (`muraliste.com`) cannot read
+  cookies scoped to the api origin (`api.muraliste.com`), so the
+  cookie-read path always returned null. Client now fetches `GET
+  /csrf-token` on first mutating request, caches the token in memory,
+  refreshes on 403 `FST_CSRF_*`. No server env change needed.
+- **localStorage-beats-server collisions** — `getMe().proSettings` was
+  fetched but never applied; localStorage was the only read path. For
+  signed-in users: `proSettings` now hydrates from `/me` and auto-syncs
+  via `PATCH /me/pro-settings` on change; the on-device save/restore
+  buttons and "Remember on device" checkbox are hidden.
+- **Image caps** —
+  - Accepted formats now include `.png` on the client (server still
+    only sees JPEG after sanitizer re-encode).
+  - `sanitizedImage.maxBytes`: 25 KB → 200 KB → 400 KB.
+  - `thumbnail.maxBytes`: 8 KB → 16 KB → 24 KB → 64 KB.
+  - `base64ImageSchema.max(chars)`: 50k → 300k → 600k (the byte-accurate
+    check lives in `imageValidation.ts`; Zod is just a sanity bound).
+
+### Known open items for the next session
+
+- **Draft-stash for unauthenticated save → sign-in** *(designed, not built)*.
+  Current behaviour: signed-out user clicks "Save to my account" → OAuth
+  redirect → returns with session but in-memory editor state is lost. The
+  plan is a localStorage draft keyed on `muralist.pending-cloud-save`
+  written before the sign-in redirect and a restore-banner on `/` when the
+  user returns authenticated. Inline banner, explicit-click scope, 60 min
+  TTL, cleared on sign-out.
+- **`/api/upload-limits` endpoint not wired**. `apps/web/app/editorPersistence.ts`
+  carries a hardcoded `DEFAULT_UPLOAD_LIMITS` that must be kept in sync
+  with `config/upload-limits.yaml`. Low-cost follow-up.
+- **`email` not on `/me` response**. Editor project-name default falls
+  back to filename because the client can't read it. Small backend add.
+- **Google OAuth "Code Challenge must be base64 encoded"** intermittent
+  error seen earlier; unresolved. Google side reported the redirect URI
+  was configured; our PKCE is spec-compliant. Watch for recurrence.
+- **Settings page / account linking UI** — deferred; see
+  `docs/plans/web-ui-post-backend.md`.
+
+### File-level touchpoints added in this round (grep anchors)
+
+- `apps/web/app/apiClient.ts` — in-memory CSRF cache, `updateProSettings`,
+  envelope unwrap for `listProjects`, `{}` body on sign-out.
+- `apps/web/app/PrototypeApp.tsx` — proSettings hydration from `/me`,
+  gated localStorage reads/writes, `isSignedIn` prop on
+  `ProSettingsPanel`.
+- `apps/web/app/uploadPipeline.ts` — `.png` + PNG magic bytes.
+- `config/upload-limits.yaml` — current caps (400 KB / 64 KB).
+- `apps/api/src/schemas/project.ts` — base64 char cap at 600k.
+- `.do/app.yaml` — both components track `main`.
