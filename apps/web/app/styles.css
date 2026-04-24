@@ -1128,3 +1128,107 @@ h1 {
   color: #5a2a0b;
   margin-right: 0.35rem;
 }
+
+/* ---- Sign-in page ------------------------------------------------------- */
+.signin-container {
+  max-width: 640px;
+  margin: 2rem auto;
+}
+.signin-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.signin-heading {
+  margin: 0;
+  font-size: 1.3rem;
+}
+.signin-lede {
+  margin: 0;
+  color: var(--muted);
+}
+.signin-loading {
+  margin: 0;
+  color: var(--muted);
+  font-style: italic;
+}
+.signin-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.signin-provider {
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+  transition: transform 80ms ease, box-shadow 120ms ease, opacity 120ms ease;
+}
+.signin-provider:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(17, 17, 17, 0.08);
+}
+.signin-provider:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.signin-provider-google:not(:disabled) {
+  background: #ffffff;
+  border-color: #dadce0;
+  color: #3c4043;
+}
+.signin-identity {
+  margin: 0;
+  font-size: 1.05rem;
+}
+.signin-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.signin-primary {
+  display: inline-block;
+  padding: 0.75rem 1.1rem;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--accent), #dd7d33);
+  color: white;
+  text-decoration: none;
+  font-weight: 600;
+}
+.signin-secondary {
+  padding: 0.75rem 1.1rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 500;
+}
+.signin-error {
+  margin: 0;
+  color: #8a1d1d;
+  font-size: 0.9rem;
+}
+
+/* ---- Header session link ------------------------------------------------ */
+.header-session-link {
+  font-size: 0.9rem;
+  color: var(--muted);
+  text-decoration: none;
+  margin-left: auto;
+  padding-left: 0.75rem;
+}
+.header-session-link:hover {
+  color: var(--ink);
+  text-decoration: underline;
+}
+.header-session-loading {
+  visibility: hidden;
+}

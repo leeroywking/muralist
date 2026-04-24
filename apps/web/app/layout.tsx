@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { HeaderSessionLink } from "./HeaderSessionLink";
 import "./styles.css";
 
 export const metadata: Metadata = {
@@ -20,6 +21,7 @@ export default function RootLayout({
           <nav className="site-nav">
             <Link href="/">App</Link>
             <Link href="/about">About</Link>
+            <HeaderSessionLink />
           </nav>
         </header>
         {children}

@@ -448,3 +448,51 @@ export async function cancelAccountDeletion(
     method: "POST"
   });
 }
+
+// ---------------------------------------------------------------------------
+// Better Auth wrappers
+//
+// Better Auth's routes are mounted at `/api/auth/*` on the API host — distinct
+// from the product endpoints above (`/me`, `/projects`, etc). The sign-in /
+// sign-out helpers go through the same `apiRequest` so they pick up
+// `credentials: "include"` for cookie flow.
+// ---------------------------------------------------------------------------
+
+export type SocialProvider =
+  | "google"
+  | "apple"
+  | "facebook"
+  | "adobe";
+
+export type SignInSocialResponse = {
+  /** Provider authorization URL the browser must navigate to. */
+  url: string;
+  /** Better Auth signals whether it expects the client to redirect. */
+  redirect?: boolean;
+};
+
+/**
+ * POST /api/auth/sign-in/social — kicks off the provider OAuth dance.
+ * Returns the provider authorization URL; the caller must navigate the browser
+ * to it (e.g. `window.location.assign(response.url)`).
+ */
+export function signInSocial(
+  payload: { provider: SocialProvider; callbackURL: string },
+  options: ApiRequestOptions = {}
+): Promise<SignInSocialResponse> {
+  return apiRequest<SignInSocialResponse>("/api/auth/sign-in/social", {
+    ...options,
+    method: "POST",
+    body: payload
+  });
+}
+
+/**
+ * POST /api/auth/sign-out — clears the Better Auth session cookie.
+ */
+export async function signOut(options: ApiRequestOptions = {}): Promise<void> {
+  await apiRequest<void>("/api/auth/sign-out", {
+    ...options,
+    method: "POST"
+  });
+}
