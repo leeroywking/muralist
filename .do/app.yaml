@@ -43,7 +43,7 @@ services:
   - name: api
     github:
       repo: leeroywking/muralist
-      branch: feat/persistence-auth-backend
+      branch: main
       deploy_on_push: true
     source_dir: /
     # Explicitly --include=dev so TypeScript + tsx (devDeps) are installed
@@ -128,7 +128,7 @@ static_sites:
   - name: web
     github:
       repo: leeroywking/muralist
-      branch: feat/persistence-auth-backend
+      branch: main
       deploy_on_push: true
     source_dir: /
     # The web workspace depends on @muralist/config + @muralist/core; both
@@ -156,7 +156,6 @@ static_sites:
 #   instance, 50 GiB outbound bandwidth included.
 # - Region nyc matches the Mongo cluster region (nyc3) to keep latency low
 #   and avoid cross-region egress charges.
-# - deploy_on_push: true auto-builds on every push to feat/persistence-auth-backend.
-#   Change to `branch: main` after the PR merges.
+# - deploy_on_push: true auto-builds on every push to main.
 # - The Mongo cluster's trusted sources list needs this app added once the
 #   app exists (`doctl databases firewalls append`).
