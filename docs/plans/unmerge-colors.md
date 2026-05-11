@@ -246,3 +246,84 @@ This is functionally identical to "add a locked color and re-run classifier" —
 ### What stays from the original plan
 
 Everything else in §1 stays as written: state additions, originalClustersRef plumbing, lastClassifiedOptions, the Lock toggle on swatches (orthogonal to Pull — user can still lock any swatch directly without going through Inspect), the schema cap bump, the `locked` field, the merge-graph helper, persistence round-trip, CSS additions. The classifier modification in §1.1-4 (`lockedIds` option) is still required — Pull relies entirely on it.
+
+## 7. 2026-05-11 — UX revision: trigger is the art, not the swatch grid
+
+Further user redirect: the user doesn't want to click on a swatch and dig into a modal. They want to look at the rendered art, see a region that's the wrong color, and **click/tap directly on that region** to pull out the correct color. Eyedropper-style direct manipulation.
+
+This addendum supersedes the modal-based interaction described in §6 and the Inspect-button steps from §1.
+
+### Mental model
+
+- User looks at either the source preview or the flatten preview in the FieldSheet (`apps/web/app/PrototypeApp.tsx` FieldSheet component around `PrototypeApp.tsx:1631+`).
+- They see a region that's rendered wrong (e.g. the viking's face shown as slate-gray + mauve in the flatten preview).
+- They tap/click that region.
+- We sample the **source** pixel at that location (from `sourcePixelsRef.current`, regardless of which preview they tapped — both previews share the same source pixel grid).
+- We quantize the sampled RGB to the 12-channel grid (`Math.round(c/12)*12`).
+- We look up the quantized cluster in `originalClustersRef.current`.
+- We add that cluster as a locked palette entry, then re-run the classifier with the expanded lockedIds set (per §6's pullColorOut action).
+- Net result: one tap → new locked swatch appears in the grid → flatten preview re-renders with the new swatch present, so the tapped region now reads as its actual color.
+
+### Supersedes
+
+- **§1 step 17 (per-swatch Inspect button).** Gone. The swatch card has no Inspect button. Lock toggle (step 18) STAYS — user can still manually lock any visible swatch directly.
+- **§1 steps 19-21 (modal component, markup, open-state).** Gone. No modal. No `inspectColorId` state.
+- **§1 step 22 (pullColorOut function signature).** Still `pullColorOut(clusterId: string)`, but the trigger is the art-tap handler, not a modal click.
+- **§6 supersession of §1 steps 19-22.** Replaced by this section — no modal in the final design.
+
+### New: art-tap handler
+
+- Add `onClick` / `onTouchEnd` handlers to the `<img>` elements that render `originalImageUrl` and `reducedImageUrl` inside the FieldSheet preview panels (`apps/web/app/PrototypeApp.tsx:1631+` for the FieldSheet component, plus wherever the previews are inserted on the main editor view — currently `<FieldSheet>` is the main consumer).
+- Handler signature: `handleArtTap(event: ReactMouseEvent<HTMLImageElement>)`.
+- Implementation:
+    1. Compute click coords relative to the `<img>` element's bounding rect.
+    2. Scale coords to `sourcePixelsRef.current` dimensions: `srcX = clickX / img.clientWidth * sourcePixelsRef.current.width`, similarly for y.
+    3. Read RGB from `sourcePixelsRef.current.data` at `srcX, srcY`.
+    4. Quantize: `qr = Math.round(r/12)*12`, similarly for g and b.
+    5. Find the cluster in `originalClustersRef.current` whose `rgb` matches `(qr, qg, qb)`. If none (image was pre-feature without raw clusters, or pixel is alpha-low / out-of-bounds), no-op silently.
+    6. If the cluster's `id` is already in `paletteColors`, no-op silently (or show a brief toast: "This color is already in your palette.").
+    7. Otherwise, invoke `pullColorOut(cluster.id)`.
+
+### UX feedback
+
+- The new swatch appears at the top of the swatch grid with a brief highlight/pulse animation (CSS keyframe) so the user can visually confirm "yes, that's the color I tapped."
+- Optional toast above the swatch grid: "Pulled color [hex chip] [hex string] — locked." Auto-dismiss after 3s.
+- Cursor styling: `cursor: pointer` on the preview images to signal interactivity.
+
+### Edge cases (revised)
+
+- **Tapping a region whose quantized bucket isn't in originalClustersRef.** Can happen if the image was hydrated from a pre-feature project (no raw clusters persisted). Silent no-op; consider a one-time hint banner under the preview: "Tap a region of the art to extract that color. (Re-upload this project to enable.)"
+- **Tapping a region whose bucket is already a visible swatch.** No-op with optional toast: "This color is already in your palette."
+- **Tapping the white border / background of the image element.** clientWidth scaling handles this automatically — coords map to a transparent or pure-white source pixel, which either has alpha < 128 (no-op) or quantizes to a bucket that may or may not exist.
+- **Tapping rapidly multiple times.** Each tap is independent. If two taps hit different quantized buckets, both get pulled out. Classifier re-runs on every pull.
+- **Mobile vs desktop interaction.** Same handler covers both via React's synthetic events. Touch responsiveness should be fine — no scroll/swipe gestures to disambiguate from on a static `<img>`.
+
+### What stays from §6 and §1
+
+- The classifier `lockedIds` modification in §1 steps 1-4 — required.
+- The `locked` field on PaletteColor / schema — required.
+- The Lock toggle on each swatch — STAYS as a direct lock-by-swatch affordance for users who want to lock an existing swatch without pulling anything.
+- The originalClustersRef plumbing — required.
+- The lastClassifiedOptions plumbing — required.
+- The schema cap bump for originalColors — required.
+- The pullColorOut action function — required, just triggered from art-tap instead of modal.
+- Persistence round-trip for `locked` and `originalColors` — required.
+
+### What's gone
+
+- All "Inspect modal" code: component, props, open-state, markup, CSS classes (`.unmerge-modal*`, `.swatch-inspect-button`).
+- The merge-graph helper (`computeMergeGraph` from §1 step 15-16) — no longer needed because we don't enumerate "which clusters merged into this swatch." We just take whatever cluster the user tapped.
+
+### Net implementation footprint vs the original plan
+
+Smaller. We trade:
+- ~80-120 LOC of modal scaffolding + state + click wiring
+- The `computeMergeGraph` helper (~30 LOC)
+- Modal CSS
+
+For:
+- ~40 LOC of art-tap handler + coord math
+- ~10 LOC of toast/highlight feedback
+- Cursor style + (optional) hint banner CSS
+
+Net reduction: ~50-100 LOC. The classifier `lockedIds` plumbing remains the biggest single piece of work.
