@@ -190,3 +190,59 @@ This is user-visible UI behavior per `AGENTS.md:83-94` — ship-it requires CI g
 4. **Locked colors interacting with `mergeSelectedColors` (manual merge).** Manual merge is user-driven and explicit. Question: should the manual-merge UI prevent the user from picking a locked color as the *absorbed* member? My lean: yes, with a clear UI affordance (locked color shows lock icon in the merge picker, and Merge button is disabled when the keeper would consume a locked color). Out of scope for v1 IF we're treating manual merge undo as a follow-up; but the FORWARD direction (manual merge of currently-locked color) needs a v1 decision. Recommendation: show a confirmation toast — manual merge override unlocks the absorbed color and merges it.
 5. **Manual-merge undo.** Out of scope for v1, but the merge graph plumbing leaves a natural extension point. A future plan could capture `mergeSelectedColors` events in a parallel "manual merges" log and present them in the same modal.
 6. **Lock icon glyph.** Plan calls for a padlock open/closed visual. We don't currently have an icon system — could be inline SVG, emoji (🔒/🔓), or a CSS-drawn shape. Recommend inline SVG (small, matches existing aesthetic). Final pick during implementation.
+
+## 6. 2026-05-11 — UX revision: "pull" instead of "unmerge"
+
+The user redirected the unmerge UX after reviewing the draft. Concern: a user who wanted to recover a single accent color (e.g. the viking's brown face) shouldn't have to wade through 50 similar shades, multi-select correctly, and click "Unmerge all the right ones." The simpler intent is **"pull this specific color back out — let the system re-merge the rest around it."**
+
+This addendum supersedes specific steps from §1 and one decision from §3.
+
+### Mental model
+
+- The user clicks Inspect on a swatch they think is wrong.
+- They see the list of raw clusters that landed in that swatch.
+- They click **Pull out** on the one cluster they actually want.
+- That cluster becomes a new standalone palette swatch, **always locked**.
+- The classifier re-runs on `originalClustersRef.current` with the expanded lockedIds set (all previously-locked colors + the newly-pulled one).
+- The other raw clusters that were absorbed into the original swatch are redistributed by the re-run — most will land back in the same keeper, some may now land in the newly-pulled color if they're nearby, and a few may shift to other survivors.
+- The user gets exactly the swatch they wanted, with no cognitive load about "which 14 of these 50 do I unmerge."
+
+This is functionally identical to "add a locked color and re-run classifier" — which the Lock feature already provides. The Inspect modal becomes a discovery + invocation surface for that capability.
+
+### Supersedes
+
+- **§1 step 19 (modal component props).** No longer needs `onUnmerge(ids[], lockUnmerged)`. New prop: `onPullOut(clusterId: string): void`.
+- **§1 step 20 (modal markup).**
+  - Header unchanged: "Colors merged into [color chip] [hex]".
+  - Body: same scrollable list, but each row has a single **"Pull out"** button on the right (no checkboxes).
+  - Footer: just Cancel. No "Unmerge selected" / "Unmerge all" / "Lock unmerged" controls.
+  - Backdrop click + Esc closes.
+- **§1 step 21 (open-state).** Unchanged.
+- **§1 step 22 (action function).** Replace `unmergeColors(keeperId, clusterIds[], lockUnmerged)` with `pullColorOut(clusterId)`:
+    1. Look up the cluster in `originalClustersRef.current` → get hex, rgb, pixelCount.
+    2. Construct a new `PaletteColor` entry from the cluster's hex/rgb/pixelCount; set `locked: true`, `disabled: false`.
+    3. Append it to a copy of the current `paletteColors`.
+    4. Re-run `classifyPaletteColors(originalClustersRef.current, { ...lastClassifiedOptions, lockedIds: <all locked ids INCLUDING the newly-pulled one> })`. The classifier respects the lockedIds set so the pulled color survives, and other clusters absorb into nearest survivors per the existing algorithm.
+    5. From the classifier result, derive the new visible palette via `applyClassification` and `rebalanceCoverage` (same shape as today's Auto-combine path).
+    6. The new visible palette **includes the pulled color** plus whatever the re-classify produced. Update `setPaletteColors`, `setClassifications`, `setMixRecipes`.
+- **§1 step 23 (rebalanceCoverage, etc.).** Folded into the re-classify pass above.
+- **§1 step 24 (close modal).** Unchanged.
+- **§3 ambiguity check decision "Default to locking unmerged colors → yes via a default-on checkbox."** Superseded: there is no checkbox now. Pulled colors are **always** locked; that's the whole point of pulling vs unmerging. The checkbox doesn't exist.
+
+### Why this is cleaner
+
+- One verb, one button per row, no multi-select UI complexity.
+- No risk of the user accidentally unmerging the wrong subset and producing a 60-swatch palette.
+- Re-merging "around" the pulled color is free — it's just re-running the same classifier the user is already familiar with from Auto-combine, but now with one more locked input.
+- The classifier itself is doing the work the user would have to do manually under the old design ("re-merge the 49 colors I don't care about").
+
+### Edge cases worth flagging
+
+- **Pulling a color that's already in the visible palette.** Shouldn't be possible because the merge-graph helper already filters out clusters whose ids are present in current `paletteColors` (step 15). Belt-and-suspenders: `pullColorOut` checks and no-ops if the cluster id is already a visible palette entry.
+- **Pulling a color from a swatch that has no merged-in clusters.** Modal shows the empty state and there are no Pull buttons to click. No-op by design.
+- **What if the user pulls a color that ends up being immediately re-absorbed by the classifier despite being locked?** Cannot happen — the classifier's lockedIds path forces the pulled color to stay buy regardless of coverage.
+- **What if the re-classify pass with one extra locked color produces a slightly different overall palette (e.g., a previously-absorbed cluster now lands on the pulled color and would have been a mix)?** Expected behavior. The user clicked Pull on a specific color intent; the surrounding palette adjusting is the entire point of the redistribute-on-pull design.
+
+### What stays from the original plan
+
+Everything else in §1 stays as written: state additions, originalClustersRef plumbing, lastClassifiedOptions, the Lock toggle on swatches (orthogonal to Pull — user can still lock any swatch directly without going through Inspect), the schema cap bump, the `locked` field, the merge-graph helper, persistence round-trip, CSS additions. The classifier modification in §1.1-4 (`lockedIds` option) is still required — Pull relies entirely on it.
