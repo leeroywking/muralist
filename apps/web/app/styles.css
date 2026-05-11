@@ -1170,12 +1170,71 @@ h1 {
 }
 .grid-preview-image.is-tappable {
   cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .grid-preview-tap-hint {
   margin: 0 0 0.4rem;
   font-size: 0.75rem;
   color: var(--muted);
   font-style: italic;
+}
+
+/* Rebuilding overlay on the reduced preview while flatten recomputes. */
+.preview-computing-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(17, 17, 17, 0.18);
+  color: #ffffff;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+  animation: preview-pulse 1.2s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 2;
+}
+@keyframes preview-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 0.92; }
+}
+
+/* Floating magnifier loupe shown while picking a color. */
+.art-loupe {
+  position: fixed;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0, 0, 0, 0.3);
+  background-repeat: no-repeat;
+  background-color: #1F2937;
+  pointer-events: none;
+  z-index: 1000;
+  image-rendering: pixelated;
+}
+.art-loupe-crosshair-h,
+.art-loupe-crosshair-v {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.95);
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+}
+.art-loupe-crosshair-h {
+  left: 50%;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  transform: translateX(-0.5px);
+}
+.art-loupe-crosshair-v {
+  top: 50%;
+  left: 0;
+  height: 1px;
+  width: 100%;
+  transform: translateY(-0.5px);
 }
 .swatch-card-disabled .swatch-body strong,
 .swatch-card-disabled .swatch-body p,

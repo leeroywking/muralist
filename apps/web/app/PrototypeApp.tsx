@@ -205,6 +205,10 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   const proSettingsSkipNextPushRef = useRef(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [flattenedImageUrl, setFlattenedImageUrl] = useState<string | null>(null);
+  // True between paletteColors change and the resulting flatten finishing —
+  // drives the "Rebuilding preview…" overlay so the user knows something is
+  // happening while the new flatten is computed off the main render cycle.
+  const [isFlattenComputing, setIsFlattenComputing] = useState(false);
   const [fileName, setFileName] = useState("");
   const [sourceAnalysis, setSourceAnalysis] = useState<AnalysisResult | null>(null);
   const [paletteColors, setPaletteColors] = useState<PaletteColor[]>([]);
@@ -429,28 +433,28 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     const source = sourcePixelsRef.current;
     if (!source || paletteColors.length === 0) {
       setFlattenedImageUrl(null);
+      setIsFlattenComputing(false);
       return;
     }
+    setIsFlattenComputing(true);
     let cancelled = false;
     const compute = () => {
       const flat = flattenImageToPalette(source, paletteColors);
       if (!cancelled) {
         setFlattenedImageUrl(flat);
+        setIsFlattenComputing(false);
       }
     };
-    const idleId = (window as unknown as { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
-    if (typeof idleId === "function") {
-      const handle = idleId(compute);
-      return () => {
-        cancelled = true;
-        const cancelIdle = (window as unknown as { cancelIdleCallback?: (h: number) => void }).cancelIdleCallback;
-        if (typeof cancelIdle === "function") cancelIdle(handle);
-      };
-    }
-    const timeoutId = window.setTimeout(compute, 0);
+    // requestAnimationFrame fires more predictably than requestIdleCallback
+    // and is supported everywhere. We yield one frame so the rebuilding
+    // overlay paints first; then the heavy per-pixel loop runs.
+    const handle = window.requestAnimationFrame(() => {
+      if (cancelled) return;
+      compute();
+    });
     return () => {
       cancelled = true;
-      window.clearTimeout(timeoutId);
+      window.cancelAnimationFrame(handle);
     };
   }, [paletteColors]);
 
@@ -1068,21 +1072,15 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   }
 
   /**
-   * Map a tap on a preview <img> back to a quantized cluster in
-   * originalClustersRef. Source preview = "proactive" intent; flatten
-   * preview = "reactive" intent; mechanism is identical. See
-   * docs/plans/unmerge-colors.md §7-§8.
+   * Map a tap on a preview at normalized (0-1) coordinates back to a
+   * quantized cluster in originalClustersRef and pull it out. Source
+   * preview = "proactive" intent; flatten preview = "reactive" intent;
+   * mechanism is identical. See docs/plans/unmerge-colors.md §7-§8.
    */
-  function handleArtTap(event: React.MouseEvent<HTMLImageElement>) {
+  function handleArtPick(normX: number, normY: number) {
     const source = sourcePixelsRef.current;
     const originalClusters = originalClustersRef.current;
     if (!source || !originalClusters) return;
-
-    const img = event.currentTarget;
-    const rect = img.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    const normX = (event.clientX - rect.left) / rect.width;
-    const normY = (event.clientY - rect.top) / rect.height;
     if (normX < 0 || normX > 1 || normY < 0 || normY > 1) return;
 
     const srcX = Math.min(source.width - 1, Math.max(0, Math.floor(normX * source.width)));
@@ -1899,8 +1897,9 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 model={fieldSheetModel}
                 originalImageUrl={previewUrl}
                 reducedImageUrl={flattenedImageUrl}
+                isReducedComputing={isFlattenComputing}
                 onArtistNotesChange={setArtistNotes}
-                onArtTap={handleArtTap}
+                onPickColor={handleArtPick}
               />
             ) : null}
           </>
@@ -1920,14 +1919,16 @@ function FieldSheet({
   model,
   originalImageUrl,
   reducedImageUrl,
+  isReducedComputing,
   onArtistNotesChange,
-  onArtTap
+  onPickColor
 }: {
   model: FieldSheetModel;
   originalImageUrl: string | null;
   reducedImageUrl: string | null;
+  isReducedComputing?: boolean;
   onArtistNotesChange: (notes: string) => void;
-  onArtTap?: (event: React.MouseEvent<HTMLImageElement>) => void;
+  onPickColor?: (normX: number, normY: number) => void;
 }) {
   const gridLines = buildGridLinePositions(model.wall, model.grid);
   const sourceAspectRatio = model.sourceSize.widthPx / model.sourceSize.heightPx;
@@ -1952,8 +1953,8 @@ function FieldSheet({
             imageUrl={originalImageUrl}
             label="Original artwork"
             note="Source ratio preserved. Grid spacing may differ by direction when the wall ratio does not match."
-            onTap={onArtTap}
-            tapHint="Tap a color you want to keep — we'll pull it back into the palette."
+            onPickColor={onPickColor}
+            tapHint="Press and drag on a color to fine-tune, release to pull it into the palette."
           />
           <GridPreview
             aspectRatio={wallAspectRatio}
@@ -1962,8 +1963,9 @@ function FieldSheet({
             imageUrl={reducedImageUrl}
             label="Reduced mural preview"
             note="Fit to entered wall dimensions. Grid cells represent real-world spacing."
-            onTap={onArtTap}
-            tapHint="Tap a region whose color is wrong — we'll pull the right color in."
+            isComputingOverlay={isReducedComputing}
+            onPickColor={onPickColor}
+            tapHint="Press and drag on a wrong-looking region, release to fix it."
           />
           <dl className="field-sheet-scale">
             <div>
@@ -2057,8 +2059,9 @@ function GridPreview({
   imageUrl,
   label,
   note,
-  onTap,
-  tapHint
+  onPickColor,
+  tapHint,
+  isComputingOverlay
 }: {
   aspectRatio: number;
   gridLines: { vertical: number[]; horizontal: number[] };
@@ -2066,10 +2069,63 @@ function GridPreview({
   imageUrl: string | null;
   label: string;
   note: string;
-  onTap?: (event: React.MouseEvent<HTMLImageElement>) => void;
+  onPickColor?: (normX: number, normY: number) => void;
   tapHint?: string;
+  isComputingOverlay?: boolean;
 }) {
-  const isInteractive = Boolean(onTap && imageUrl);
+  const isInteractive = Boolean(onPickColor && imageUrl);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const [loupe, setLoupe] = useState<{
+    normX: number;
+    normY: number;
+    rect: { left: number; top: number; width: number; height: number };
+  } | null>(null);
+
+  function pointFromEvent(event: React.PointerEvent<HTMLImageElement>) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const normX = (event.clientX - rect.left) / rect.width;
+    const normY = (event.clientY - rect.top) / rect.height;
+    return {
+      normX: Math.min(1, Math.max(0, normX)),
+      normY: Math.min(1, Math.max(0, normY)),
+      rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+    };
+  }
+
+  function handlePointerDown(event: React.PointerEvent<HTMLImageElement>) {
+    if (!isInteractive) return;
+    event.preventDefault();
+    const point = pointFromEvent(event);
+    if (!point) return;
+    setLoupe(point);
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // setPointerCapture can throw if the element isn't attached yet —
+      // safe to ignore; pointer events still fire on the element.
+    }
+  }
+  function handlePointerMove(event: React.PointerEvent<HTMLImageElement>) {
+    if (!loupe) return;
+    const point = pointFromEvent(event);
+    if (!point) return;
+    setLoupe(point);
+  }
+  function handlePointerUp(event: React.PointerEvent<HTMLImageElement>) {
+    if (!loupe) return;
+    onPickColor?.(loupe.normX, loupe.normY);
+    setLoupe(null);
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Capture may have been released already.
+    }
+  }
+  function handlePointerCancel() {
+    setLoupe(null);
+  }
+
   return (
     <figure className="grid-preview">
       {isInteractive && tapHint ? (
@@ -2078,15 +2134,26 @@ function GridPreview({
       <div className="grid-preview-frame" style={{ aspectRatio }}>
         {imageUrl ? (
           <img
+            ref={imgRef}
             alt={label}
             className={`grid-preview-image grid-preview-image-${imageFit} ${isInteractive ? "is-tappable" : ""}`}
             src={imageUrl}
-            onClick={isInteractive ? onTap : undefined}
+            draggable={false}
+            onPointerDown={isInteractive ? handlePointerDown : undefined}
+            onPointerMove={isInteractive && loupe ? handlePointerMove : undefined}
+            onPointerUp={isInteractive ? handlePointerUp : undefined}
+            onPointerCancel={isInteractive ? handlePointerCancel : undefined}
+            onPointerLeave={isInteractive ? handlePointerCancel : undefined}
             role={isInteractive ? "button" : undefined}
           />
         ) : (
           <div className="grid-preview-empty">Preview will appear here.</div>
         )}
+        {isComputingOverlay && imageUrl ? (
+          <div className="preview-computing-overlay" aria-hidden="true">
+            <span>Rebuilding preview…</span>
+          </div>
+        ) : null}
         <svg className="grid-overlay" aria-hidden="true" focusable="false" viewBox="0 0 100 100" preserveAspectRatio="none">
           {gridLines.vertical.map((position) => (
             <line key={`v-${position}`} x1={position} x2={position} y1="0" y2="100" />
@@ -2100,7 +2167,56 @@ function GridPreview({
         <strong>{label}</strong>
         <span>{note}</span>
       </figcaption>
+      {loupe && imageUrl ? <ArtLoupe imageUrl={imageUrl} {...loupe} /> : null}
     </figure>
+  );
+}
+
+/**
+ * Floating magnifier that follows the pointer while picking a color. Uses
+ * CSS background-image to render a 6× zoom of the source image, with the
+ * tap point centered under a crosshair so the user can fine-tune the
+ * pick before releasing.
+ */
+function ArtLoupe({
+  imageUrl,
+  normX,
+  normY,
+  rect
+}: {
+  imageUrl: string;
+  normX: number;
+  normY: number;
+  rect: { left: number; top: number; width: number; height: number };
+}) {
+  const SIZE = 180;
+  const ZOOM = 6;
+  const OFFSET_X = 60;
+  const OFFSET_Y = -90;
+  const bgWidth = rect.width * ZOOM;
+  const bgHeight = rect.height * ZOOM;
+  const bgX = -(normX * bgWidth - SIZE / 2);
+  const bgY = -(normY * bgHeight - SIZE / 2);
+  // Anchor to the cursor in viewport space.
+  const cursorX = rect.left + normX * rect.width;
+  const cursorY = rect.top + normY * rect.height;
+  return (
+    <div
+      className="art-loupe"
+      style={{
+        left: cursorX + OFFSET_X - SIZE / 2,
+        top: cursorY + OFFSET_Y - SIZE / 2,
+        width: SIZE,
+        height: SIZE,
+        backgroundImage: `url(${imageUrl})`,
+        backgroundSize: `${bgWidth}px ${bgHeight}px`,
+        backgroundPosition: `${bgX}px ${bgY}px`
+      }}
+      aria-hidden="true"
+    >
+      <div className="art-loupe-crosshair-h" />
+      <div className="art-loupe-crosshair-v" />
+    </div>
   );
 }
 
