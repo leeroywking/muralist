@@ -685,17 +685,19 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
         setPreviewUrl(sanitizedUrl);
         setSourceAnalysis(analysis);
 
-        // Classify-on-upload. The user's current sensitivity (default
-        // "balanced") replaces the prior top-N popularity cut as the gate on
-        // which colors are visible. Auto-combine button is now a
-        // re-classify-at-different-sensitivity action.
+        // Classify-on-upload at the "balanced" preset. We intentionally
+        // ignore proSettings.residualThreshold here so the first-experience
+        // palette is consistent regardless of any stored user preference;
+        // the Auto-combine button still honors proSettings, so users who
+        // want a tighter/looser classification can re-run at their
+        // preferred sensitivity.
         const classifierInput = analysis.colors.map((color) => ({
           id: color.id,
           rgb: color.rgb,
           pixelCount: color.pixelCount
         }));
         const classifiedList = classifyPaletteColors(classifierInput, {
-          residualThreshold: proSettings.residualThreshold,
+          residualThreshold: SENSITIVITY_PRESETS.balanced,
           mixCoveragePercent: proSettings.mixCoveragePercent
         });
         const { nextColors, mixes } = applyClassification(classifierInput, classifiedList);
