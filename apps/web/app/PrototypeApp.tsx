@@ -143,9 +143,14 @@ const DEFAULT_PRO_SETTINGS: ProSettings = {
   rememberOnDevice: true
 };
 
-const maxDimension = 320;
-const maxSamplePixels = 22000;
-const paletteLimit = 50;
+// The flatten-to-palette visualization runs on a downsampled canvas to keep
+// per-frame painter cost bounded — it does NOT affect the swatch survey,
+// which runs at full natural resolution on the original upload.
+const flattenVizMaxDimension = 320;
+// Stride controller for the swatch survey. At ≥500k samples, a 7-megapixel
+// phone photo runs with stride ≈14, which keeps small accent regions well
+// represented while bounding the loop cost.
+const maxSamplePixels = 500_000;
 const savedMergePlanKey = "muralist.saved-merge-plan";
 const proSettingsKey = "muralist.pro-settings";
 
@@ -668,22 +673,68 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
 
     startTransition(async () => {
       try {
-        const { sanitized, thumbnail } = await sanitizeUpload(file, limits);
-        // Run the palette extractor against the sanitized bytes so the
-        // swatches we store match what the server has.
+        // Pipeline A (analysis) and Pipeline B (persistence + visualization)
+        // run in parallel and are otherwise independent. See
+        // docs/plans/palette-survey-from-original.md for the rationale.
+        const [analysis, { sanitized, thumbnail }] = await Promise.all([
+          analyzeImage(file, canvasRef.current),
+          sanitizeUpload(file, limits)
+        ]);
+
         const sanitizedUrl = URL.createObjectURL(sanitized);
         setPreviewUrl(sanitizedUrl);
-        const result = await analyzeBlob(sanitized, canvasRef.current);
-        setSourceAnalysis(result);
-        setPaletteColors(result.colors);
-        const canvas = canvasRef.current;
-        const ctx = canvas?.getContext("2d", { willReadFrequently: true });
-        if (canvas && ctx) {
-          const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        setSourceAnalysis(analysis);
+
+        // Classify-on-upload at the "balanced" preset. We intentionally
+        // ignore proSettings.residualThreshold here so the first-experience
+        // palette is consistent regardless of any stored user preference;
+        // the Auto-combine button still honors proSettings, so users who
+        // want a tighter/looser classification can re-run at their
+        // preferred sensitivity.
+        const classifierInput = analysis.colors.map((color) => ({
+          id: color.id,
+          rgb: color.rgb,
+          pixelCount: color.pixelCount
+        }));
+        const classifiedList = classifyPaletteColors(classifierInput, {
+          residualThreshold: SENSITIVITY_PRESETS.balanced,
+          mixCoveragePercent: proSettings.mixCoveragePercent
+        });
+        const { nextColors, mixes } = applyClassification(classifierInput, classifiedList);
+        const pixelCountById = new Map(nextColors.map((entry) => [entry.id, entry.pixelCount]));
+        const visiblePalette = rebalanceCoverage(
+          analysis.colors
+            .filter((color) => pixelCountById.has(color.id))
+            .map((color) => ({ ...color, pixelCount: pixelCountById.get(color.id)! }))
+            .sort((left, right) => right.pixelCount - left.pixelCount)
+        );
+        const retainedIds = new Set(visiblePalette.map((color) => color.id));
+        const nextClassifications: Record<string, PaletteClassification> = {};
+        for (const entry of classifiedList) {
+          if (!retainedIds.has(entry.id)) continue;
+          nextClassifications[entry.id] = entry.classification;
+        }
+        setPaletteColors(visiblePalette);
+        setClassifications(nextClassifications);
+        setMixRecipes(mixes);
+
+        // Snapshot the sanitized image into sourcePixelsRef for the
+        // flatten-to-palette visualization. Sanitized resolution matches the
+        // hydrated-project path (line ~586) and keeps the flatten painter cheap.
+        const flattenImage = await loadImage(sanitizedUrl);
+        const flattenCanvas = document.createElement("canvas");
+        const flattenDims = getScaledDimensions(flattenImage.naturalWidth, flattenImage.naturalHeight);
+        flattenCanvas.width = flattenDims.width;
+        flattenCanvas.height = flattenDims.height;
+        const flattenCtx = flattenCanvas.getContext("2d", { willReadFrequently: true });
+        if (flattenCtx) {
+          flattenCtx.clearRect(0, 0, flattenDims.width, flattenDims.height);
+          flattenCtx.drawImage(flattenImage, 0, 0, flattenDims.width, flattenDims.height);
+          const img = flattenCtx.getImageData(0, 0, flattenDims.width, flattenDims.height);
           sourcePixelsRef.current = {
             data: new Uint8ClampedArray(img.data),
-            width: canvas.width,
-            height: canvas.height
+            width: flattenDims.width,
+            height: flattenDims.height
           };
         }
 
@@ -1119,7 +1170,11 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
           <div className="metrics">
             <div>
               <span className="metric-label">Palette capture</span>
-              <strong>Top {paletteLimit} colors max</strong>
+              <strong>
+                {paletteColors.length > 0
+                  ? `${paletteColors.length} swatch${paletteColors.length === 1 ? "" : "es"}`
+                  : "Awaiting upload"}
+              </strong>
             </div>
             <div>
               <span className="metric-label">Brand default</span>
@@ -1343,7 +1398,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                   disabled={paletteColors.length < 3}
                   onClick={handleAutoCombine}
                   type="button"
-                  title="Classify the palette into colors to buy, colors to mix, and gradient members to absorb into their nearest neighbors."
+                  title="Re-classify the palette at the current sensitivity. Classification runs automatically on upload; click to re-run after adjusting sensitivity in Pro Settings."
                 >
                   Auto-combine similar colors
                 </button>
@@ -1719,24 +1774,15 @@ function GridPreview({
   );
 }
 
+/**
+ * The sole palette-survey entry point. Always receives the original upload
+ * `File`; never the sanitized blob or thumbnail. The sanitized artifacts
+ * exist only for persistence + visualization (Pipeline B) and must not be
+ * the analysis source — see docs/plans/palette-survey-from-original.md.
+ */
 async function analyzeImage(file: File, canvas: HTMLCanvasElement | null) {
   const imageUrl = URL.createObjectURL(file);
 
-  try {
-    const image = await loadImage(imageUrl);
-    return analyzeLoadedImage(image, canvas);
-  } finally {
-    URL.revokeObjectURL(imageUrl);
-  }
-}
-
-/**
- * Same shape as `analyzeImage` but accepts a Blob — used after
- * `sanitizeUpload` has re-encoded the upload into a capped JPEG so the
- * palette reflects the stored pixels, not the user's original file.
- */
-async function analyzeBlob(blob: Blob, canvas: HTMLCanvasElement | null) {
-  const imageUrl = URL.createObjectURL(blob);
   try {
     const image = await loadImage(imageUrl);
     return analyzeLoadedImage(image, canvas);
@@ -1750,7 +1796,11 @@ function analyzeLoadedImage(image: HTMLImageElement, canvas: HTMLCanvasElement |
     throw new Error("Canvas is unavailable.");
   }
 
-  const { width, height } = getScaledDimensions(image.naturalWidth, image.naturalHeight);
+  // Survey runs at the full natural resolution of the original upload. The
+  // sanitized + thumbnail artifacts are visualization/persistence only and
+  // must never be the analysis source — see docs/plans/palette-survey-from-original.md.
+  const width = image.naturalWidth;
+  const height = image.naturalHeight;
   canvas.width = width;
   canvas.height = height;
 
@@ -1771,10 +1821,11 @@ function analyzeLoadedImage(image: HTMLImageElement, canvas: HTMLCanvasElement |
   }
 
   const initialClusters = bucketPixels(sampled);
+  // No top-N cut by raw pixelCount — classifyPaletteColors runs at the
+  // upload call site and is the only legitimate "what gets shown" gate.
   const colors = rebalanceCoverage(
     initialClusters
       .sort((left, right) => right.pixelCount - left.pixelCount)
-      .slice(0, paletteLimit)
       .map((cluster, index) => ({
         id: `color-${index + 1}`,
         hex: rgbToHex(cluster.rgb),
@@ -1810,7 +1861,7 @@ function loadImage(src: string) {
 }
 
 function getScaledDimensions(width: number, height: number) {
-  const scale = Math.min(1, maxDimension / Math.max(width, height));
+  const scale = Math.min(1, flattenVizMaxDimension / Math.max(width, height));
 
   return {
     width: Math.max(1, Math.round(width * scale)),
