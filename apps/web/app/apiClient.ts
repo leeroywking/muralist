@@ -54,6 +54,12 @@ export type PaletteColor = {
   hex: string;
   coverage: number;
   classification?: "buy" | "mix" | "absorb";
+  /**
+   * User-toggled: when true the color is skipped from the estimate and the
+   * maquette PDF's swatch table. Persisted server-side via the optional
+   * `disabled` field on `paletteColorSchema`.
+   */
+  disabled?: boolean;
 };
 
 export type MergeOperation = {

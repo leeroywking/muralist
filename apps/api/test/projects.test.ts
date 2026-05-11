@@ -569,3 +569,58 @@ test("PATCH /projects/:id/metadata updates name and mirrors to thumbnail tile", 
 
   await teardown();
 });
+
+test("POST /projects accepts palette with disabled: true on a color", async () => {
+  const { app, teardown } = await setupHarness(sessionFor("disable-flag-true"));
+
+  const response = await mutatingInject(app, {
+    method: "POST",
+    url: "/projects",
+    payload: {
+      name: "Disabled Color Project",
+      palette: {
+        colors: [
+          { id: "c1", hex: "#ff0000", coverage: 0.5, disabled: true },
+          { id: "c2", hex: "#00ff00", coverage: 0.5 }
+        ]
+      },
+      image: SAMPLE_JPEG_B64,
+      thumbnail: SMALL_JPEG_B64
+    }
+  });
+  assert.equal(response.statusCode, 201, response.body);
+  const { id } = response.json() as { id: string };
+
+  const full = await app.inject({ method: "GET", url: `/projects/${id}` });
+  assert.equal(full.statusCode, 200);
+  const body = full.json() as { palette: { colors: Array<{ id: string; disabled?: boolean }> } };
+  const c1 = body.palette.colors.find((c) => c.id === "c1");
+  const c2 = body.palette.colors.find((c) => c.id === "c2");
+  assert.equal(c1?.disabled, true);
+  assert.equal(c2?.disabled, undefined);
+
+  await teardown();
+});
+
+test("POST /projects rejects palette with non-boolean disabled value", async () => {
+  const { app, teardown } = await setupHarness(sessionFor("disable-flag-invalid"));
+
+  const response = await mutatingInject(app, {
+    method: "POST",
+    url: "/projects",
+    payload: {
+      name: "Bad Disable Flag",
+      palette: {
+        colors: [
+          { id: "c1", hex: "#ff0000", coverage: 0.5, disabled: "yes" },
+          { id: "c2", hex: "#00ff00", coverage: 0.5 }
+        ]
+      },
+      image: SAMPLE_JPEG_B64,
+      thumbnail: SMALL_JPEG_B64
+    }
+  });
+  assert.equal(response.statusCode, 400, response.body);
+
+  await teardown();
+});
