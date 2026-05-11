@@ -60,6 +60,13 @@ export type PaletteColor = {
    * `disabled` field on `paletteColorSchema`.
    */
   disabled?: boolean;
+  /**
+   * User-toggled: when true the color is protected from Auto-combine
+   * absorbing it into another swatch. Other unlocked colors can still
+   * absorb INTO it. Persisted server-side via the optional `locked`
+   * field on `paletteColorSchema`.
+   */
+  locked?: boolean;
 };
 
 export type MergeOperation = {

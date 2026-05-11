@@ -73,6 +73,11 @@ export type EditorPaletteColor = {
    * flatten preview. Stays in the palette state so the user can re-enable.
    */
   disabled?: boolean;
+  /**
+   * When true, the color is protected from Auto-combine absorbing it.
+   * Other unlocked colors can still absorb INTO a locked color.
+   */
+  locked?: boolean;
 };
 
 export type EditorSnapshot = {
@@ -115,6 +120,10 @@ export function toBackendPaletteColors(
       // Only emit when true to keep wire payloads compact; legacy clients
       // that don't know about `disabled` will simply treat omitted as false.
       backendColor.disabled = true;
+    }
+    if (color.locked) {
+      // Same pattern as `disabled` — omit when false for compactness.
+      backendColor.locked = true;
     }
     return backendColor;
   });
@@ -229,7 +238,8 @@ function toEditorPaletteColors(
     coveragePercent: color.coverage * 100,
     // Legacy projects (saved before this flag existed) hydrate with
     // `disabled` undefined, which the rest of the app treats as false.
-    disabled: color.disabled === true ? true : undefined
+    disabled: color.disabled === true ? true : undefined,
+    locked: color.locked === true ? true : undefined
   }));
 }
 

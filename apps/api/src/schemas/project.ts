@@ -18,7 +18,11 @@ const paletteColorSchema = z.object({
   // a hatch in the flatten preview. Optional so legacy payloads still
   // validate. Coverage stays at its original value either way — disabling
   // does not renormalize the remaining colors.
-  disabled: z.boolean().optional()
+  disabled: z.boolean().optional(),
+  // User-toggled flag: when true the color is protected from Auto-combine
+  // absorbing it into another swatch. Other (unlocked) colors can still
+  // absorb INTO a locked color. Optional, defaults to false.
+  locked: z.boolean().optional()
 });
 
 const mergeOperationSchema = z.object({
@@ -49,7 +53,7 @@ const mixRecipeSchema = z
 export const paletteJsonSchema = z
   .object({
     colors: z.array(paletteColorSchema).min(1).max(200),
-    originalColors: z.array(paletteColorSchema).max(200).optional(),
+    originalColors: z.array(paletteColorSchema).max(1000).optional(),
     merges: z.array(mergeOperationSchema).max(200).optional(),
     mixRecipes: z.array(mixRecipeSchema).max(200).optional(),
     finishOverrides: z.record(z.string().max(100), z.string().max(100)).optional(),

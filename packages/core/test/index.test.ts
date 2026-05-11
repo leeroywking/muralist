@@ -593,6 +593,83 @@ test("classifyPaletteColors with fewer than three colors marks every entry as bu
   );
 });
 
+test("classifyPaletteColors keeps a locked low-coverage color as buy instead of absorbing it", () => {
+  // Two extreme buys (red, blue) plus a low-coverage color (purple) that
+  // projects onto their mixing line. Without a lock, purple absorbs because
+  // its coverage is below mixCoveragePercent. With a lock, purple stays buy.
+  const colors: ClassifyPaletteInput[] = [
+    { id: "red", rgb: [255, 0, 0], pixelCount: 1000 },
+    { id: "blue", rgb: [0, 0, 255], pixelCount: 1000 },
+    { id: "purple", rgb: [128, 0, 128], pixelCount: 10 }
+  ];
+
+  const withoutLock = classifyPaletteColors(colors, {
+    residualThreshold: 18,
+    mixCoveragePercent: 5
+  });
+  const purpleWithoutLock = withoutLock.find((entry) => entry.id === "purple");
+  assert.equal(purpleWithoutLock?.classification, "absorb");
+
+  const withLock = classifyPaletteColors(colors, {
+    residualThreshold: 18,
+    mixCoveragePercent: 5,
+    lockedIds: new Set(["purple"])
+  });
+  const purpleWithLock = withLock.find((entry) => entry.id === "purple");
+  assert.equal(purpleWithLock?.classification, "buy");
+});
+
+test("classifyPaletteColors keeps a locked color as Phase 0 keeper even when it has fewer pixels", () => {
+  // Two colors close enough in RGB to trigger Phase 0 dedup. Without lock,
+  // the one with more pixels (loud) keeps; the locked one (quiet) would be
+  // absorbed. With a lock on quiet, quiet keeps despite having fewer pixels.
+  const colors: ClassifyPaletteInput[] = [
+    { id: "loud", rgb: [120, 120, 120], pixelCount: 1000 },
+    { id: "quiet", rgb: [122, 122, 122], pixelCount: 10 }
+  ];
+
+  const withoutLock = classifyPaletteColors(colors, {
+    residualThreshold: 18,
+    mixCoveragePercent: 5
+  });
+  // Without a lock, quiet absorbs into loud during Phase 0 dedup.
+  const quietWithoutLock = withoutLock.find((entry) => entry.id === "quiet");
+  assert.equal(quietWithoutLock?.classification, "absorb");
+  assert.equal(quietWithoutLock?.absorbedIntoId, "loud");
+
+  const withLock = classifyPaletteColors(colors, {
+    residualThreshold: 18,
+    mixCoveragePercent: 5,
+    lockedIds: new Set(["quiet"])
+  });
+  // With a lock on quiet, loud absorbs into quiet instead.
+  const loudWithLock = withLock.find((entry) => entry.id === "loud");
+  const quietWithLock = withLock.find((entry) => entry.id === "quiet");
+  assert.equal(loudWithLock?.classification, "absorb");
+  assert.equal(loudWithLock?.absorbedIntoId, "quiet");
+  assert.equal(quietWithLock?.classification, "buy");
+});
+
+test("classifyPaletteColors never merges two locked colors with each other", () => {
+  // Two close-but-distinct colors, both locked. Neither absorbs the other.
+  const colors: ClassifyPaletteInput[] = [
+    { id: "lock-a", rgb: [120, 120, 120], pixelCount: 500 },
+    { id: "lock-b", rgb: [125, 125, 125], pixelCount: 500 },
+    { id: "extreme", rgb: [10, 10, 10], pixelCount: 100 }
+  ];
+
+  const classifications = classifyPaletteColors(colors, {
+    residualThreshold: 18,
+    mixCoveragePercent: 5,
+    lockedIds: new Set(["lock-a", "lock-b"])
+  });
+  const a = classifications.find((entry) => entry.id === "lock-a");
+  const b = classifications.find((entry) => entry.id === "lock-b");
+  // Both stay non-absorbed even though they're within the residual threshold.
+  assert.notEqual(a?.classification, "absorb");
+  assert.notEqual(b?.classification, "absorb");
+});
+
 test("classifyPaletteColors rejects invalid options", () => {
   const colors: ClassifyPaletteInput[] = [
     { id: "a", rgb: [10, 10, 10], pixelCount: 1 },

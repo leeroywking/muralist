@@ -624,3 +624,90 @@ test("POST /projects rejects palette with non-boolean disabled value", async () 
 
   await teardown();
 });
+
+test("POST /projects accepts palette with locked: true on a color", async () => {
+  const { app, teardown } = await setupHarness(sessionFor("lock-flag-true"));
+
+  const response = await mutatingInject(app, {
+    method: "POST",
+    url: "/projects",
+    payload: {
+      name: "Locked Color Project",
+      palette: {
+        colors: [
+          { id: "c1", hex: "#ff0000", coverage: 0.5, locked: true },
+          { id: "c2", hex: "#00ff00", coverage: 0.5 }
+        ]
+      },
+      image: SAMPLE_JPEG_B64,
+      thumbnail: SMALL_JPEG_B64
+    }
+  });
+  assert.equal(response.statusCode, 201, response.body);
+  const { id } = response.json() as { id: string };
+
+  const full = await app.inject({ method: "GET", url: `/projects/${id}` });
+  assert.equal(full.statusCode, 200);
+  const body = full.json() as { palette: { colors: Array<{ id: string; locked?: boolean }> } };
+  const c1 = body.palette.colors.find((c) => c.id === "c1");
+  const c2 = body.palette.colors.find((c) => c.id === "c2");
+  assert.equal(c1?.locked, true);
+  assert.equal(c2?.locked, undefined);
+
+  await teardown();
+});
+
+test("POST /projects rejects palette with non-boolean locked value", async () => {
+  const { app, teardown } = await setupHarness(sessionFor("lock-flag-invalid"));
+
+  const response = await mutatingInject(app, {
+    method: "POST",
+    url: "/projects",
+    payload: {
+      name: "Bad Lock Flag",
+      palette: {
+        colors: [
+          { id: "c1", hex: "#ff0000", coverage: 0.5, locked: "yes" },
+          { id: "c2", hex: "#00ff00", coverage: 0.5 }
+        ]
+      },
+      image: SAMPLE_JPEG_B64,
+      thumbnail: SMALL_JPEG_B64
+    }
+  });
+  assert.equal(response.statusCode, 400, response.body);
+
+  await teardown();
+});
+
+test("POST /projects accepts palette.originalColors of length 900", async () => {
+  const { app, teardown } = await setupHarness(sessionFor("original-colors-large"));
+
+  // Generate 900 valid color entries with coverages summing to <=1 (originalColors
+  // doesn't have the sum-to-1 constraint, only paletteJsonSchema.colors does).
+  const originalColors = Array.from({ length: 900 }, (_, i) => ({
+    id: `bucket-${i}`,
+    hex: `#${(i % 16).toString(16)}${((i + 1) % 16).toString(16)}${((i + 2) % 16).toString(16)}${(i % 16).toString(16)}${((i + 1) % 16).toString(16)}${((i + 2) % 16).toString(16)}`,
+    coverage: 0.001
+  }));
+
+  const response = await mutatingInject(app, {
+    method: "POST",
+    url: "/projects",
+    payload: {
+      name: "Large Original Colors",
+      palette: {
+        colors: [
+          { id: "c1", hex: "#ff0000", coverage: 0.5 },
+          { id: "c2", hex: "#00ff00", coverage: 0.5 }
+        ],
+        originalColors
+      },
+      image: SAMPLE_JPEG_B64,
+      thumbnail: SMALL_JPEG_B64
+    }
+  });
+  assert.equal(response.statusCode, 201, response.body);
+
+  await teardown();
+});
