@@ -67,6 +67,12 @@ export type EditorPaletteColor = {
   rgb: [number, number, number];
   pixelCount: number;
   coveragePercent: number;
+  /**
+   * When true, the color is skipped from the estimate, container plan, and
+   * maquette PDF swatch table; its assigned pixels render as a hatch in the
+   * flatten preview. Stays in the palette state so the user can re-enable.
+   */
+  disabled?: boolean;
 };
 
 export type EditorSnapshot = {
@@ -104,6 +110,11 @@ export function toBackendPaletteColors(
     };
     if (classification) {
       backendColor.classification = classification;
+    }
+    if (color.disabled) {
+      // Only emit when true to keep wire payloads compact; legacy clients
+      // that don't know about `disabled` will simply treat omitted as false.
+      backendColor.disabled = true;
     }
     return backendColor;
   });
@@ -215,7 +226,10 @@ function toEditorPaletteColors(
     hex: color.hex.toUpperCase(),
     rgb: hexToRgb(color.hex),
     pixelCount: Math.max(1, Math.round(color.coverage * SCALE)),
-    coveragePercent: color.coverage * 100
+    coveragePercent: color.coverage * 100,
+    // Legacy projects (saved before this flag existed) hydrate with
+    // `disabled` undefined, which the rest of the app treats as false.
+    disabled: color.disabled === true ? true : undefined
   }));
 }
 

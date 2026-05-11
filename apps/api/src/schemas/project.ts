@@ -12,7 +12,13 @@ const paletteColorSchema = z.object({
   id: z.string().min(1).max(100),
   hex: hexColorSchema,
   coverage: z.number().min(0).max(1),
-  classification: classificationSchema.optional()
+  classification: classificationSchema.optional(),
+  // User-toggled flag: when true the color is omitted from the estimate
+  // and the maquette PDF's swatch table, and its assigned pixels render as
+  // a hatch in the flatten preview. Optional so legacy payloads still
+  // validate. Coverage stays at its original value either way — disabling
+  // does not renormalize the remaining colors.
+  disabled: z.boolean().optional()
 });
 
 const mergeOperationSchema = z.object({

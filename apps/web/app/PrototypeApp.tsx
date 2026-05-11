@@ -53,6 +53,14 @@ type PaletteColor = {
   rgb: [number, number, number];
   pixelCount: number;
   coveragePercent: number;
+  /**
+   * When true, the color is skipped from the estimate, container plan,
+   * maquette PDF swatch table, and Auto-combine classifier input. Its
+   * assigned pixels in the flatten preview render as a diagonal-stripe
+   * hatch instead of the color itself. The color stays in `paletteColors`
+   * so the user can re-enable it.
+   */
+  disabled?: boolean;
 };
 
 type AnalysisResult = {
@@ -245,10 +253,16 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     parsedWaste >= 0;
 
   const adjustedCoverage = useMemo(() => {
-    const raw = paletteColors.map((color) => ({
-      id: color.id,
-      coveragePercent: color.coveragePercent
-    }));
+    // Disabled colors are excluded entirely. Coverage values are NOT
+    // renormalized — the remaining colors keep their original percentages
+    // and the painted-area sum naturally drops below 100% (correct when
+    // the disabled colors represent bare wall / unpainted areas).
+    const raw = paletteColors
+      .filter((color) => !color.disabled)
+      .map((color) => ({
+        id: color.id,
+        coveragePercent: color.coveragePercent
+      }));
     if (mixRecipes.length === 0) return raw;
     try {
       return applyMixesToCoverage(raw, mixRecipes);
@@ -306,9 +320,12 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       { widthPx: sourceAnalysis.width, heightPx: sourceAnalysis.height },
       { widthFt: parsedLength, heightFt: parsedWidth }
     );
+    // Disabled colors don't appear in the field sheet — they're omitted
+    // from the swatch table and excluded from totals.
+    const enabledColors = paletteColors.filter((color) => !color.disabled);
     const colorAreas = deriveColorAreaEstimates(
       wallArea,
-      paletteColors.map((color) => ({
+      enabledColors.map((color) => ({
         id: color.id,
         coveragePercent: color.coveragePercent
       }))
@@ -331,7 +348,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       brandLabel: selectedBrand.display_name,
       retailer: selectedBrand.retailer,
       currency: containerPlan.currency,
-      colors: paletteColors.map((color) => {
+      colors: enabledColors.map((color) => {
         const plan = containerPlan.perColor.find((entry) => entry.colorId === color.id);
         const finish = selectedBrand.finishes.find((entry) => entry.id === plan?.finishId);
         const classification: PaletteClassification = classifications[color.id] ?? "buy";
@@ -864,6 +881,22 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     });
   }
 
+  function toggleColorDisabled(colorId: string) {
+    setPaletteColors((current) =>
+      current.map((color) =>
+        color.id === colorId
+          ? { ...color, disabled: !color.disabled }
+          : color
+      )
+    );
+    // Drop the color from the active selection if it was selected — a
+    // disabled color can't participate in manual merges either.
+    setSelectedColorIds((current) => current.filter((id) => id !== colorId));
+    if (mergeKeeperId === colorId) {
+      setMergeKeeperId("");
+    }
+  }
+
   function mergeSelectedColors() {
     if (selectedColorIds.length < 2 || !mergeKeeperId) {
       return;
@@ -919,12 +952,18 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   }
 
   function handleAutoCombine() {
-    if (paletteColors.length < 3) {
+    // Disabled colors bypass the classifier entirely so they don't pull
+    // into mix recipes or get re-absorbed; they pass through to the next
+    // palette as-is, with their classification preserved.
+    const enabledColors = paletteColors.filter((color) => !color.disabled);
+    const disabledColors = paletteColors.filter((color) => color.disabled);
+
+    if (enabledColors.length < 3) {
       setSaveMessage("Need at least three captured colors before auto-combine can help.");
       return;
     }
 
-    const classifierInput = paletteColors.map((color) => ({
+    const classifierInput = enabledColors.map((color) => ({
       id: color.id,
       rgb: color.rgb,
       pixelCount: color.pixelCount
@@ -942,9 +981,12 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     }
 
     const pixelCountById = new Map(nextColors.map((entry) => [entry.id, entry.pixelCount]));
-    const nextPalette: PaletteColor[] = paletteColors
-      .filter((color) => pixelCountById.has(color.id))
-      .map((color) => ({ ...color, pixelCount: pixelCountById.get(color.id)! }))
+    const nextPalette: PaletteColor[] = [
+      ...enabledColors
+        .filter((color) => pixelCountById.has(color.id))
+        .map((color) => ({ ...color, pixelCount: pixelCountById.get(color.id)! })),
+      ...disabledColors
+    ]
       .sort((left, right) => right.pixelCount - left.pixelCount);
 
     const rebalanced = rebalanceCoverage(nextPalette);
@@ -1515,6 +1557,10 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
               )}
             </div>
 
+            <p className="palette-skip-help">
+              Use <strong>Skip in estimate</strong> on a color to leave it out of the paint plan and maquette — useful for backgrounds that are bare wall, not painted.
+            </p>
+
             <div className="palette-grid">
               {paletteColors.map((color) => {
                 const isSelected = selectedColorIds.includes(color.id);
@@ -1523,24 +1569,41 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 const classification = classifications[color.id] ?? "buy";
                 const isMix = classification === "mix";
                 const recipe = isMix ? mixRecipes.find((entry) => entry.targetColorId === color.id) : undefined;
+                const isDisabled = color.disabled === true;
 
                 return (
                   <article
-                    className={`swatch-card ${isSelected ? "swatch-card-selected" : ""} ${isMix ? "swatch-card-mix" : ""}`}
+                    className={`swatch-card ${isSelected ? "swatch-card-selected" : ""} ${isMix ? "swatch-card-mix" : ""} ${isDisabled ? "swatch-card-disabled" : ""}`}
                     key={color.id}
                   >
                     <button
                       className="swatch-toggle"
                       onClick={() => toggleColorSelection(color.id)}
                       type="button"
+                      disabled={isDisabled}
                     >
-                      <div className="swatch" style={{ backgroundColor: color.hex }} />
+                      <div
+                        className={`swatch ${isDisabled ? "swatch-disabled-hatch" : ""}`}
+                        style={isDisabled ? undefined : { backgroundColor: color.hex }}
+                      />
                     </button>
                     <div className="swatch-body">
                       <div className="swatch-title-row">
                         <strong>{color.hex}</strong>
                         <span>{color.coveragePercent.toFixed(1)}%</span>
                       </div>
+                      <button
+                        className={`swatch-skip-pill ${isDisabled ? "is-skipped" : ""}`}
+                        onClick={() => toggleColorDisabled(color.id)}
+                        type="button"
+                        title={
+                          isDisabled
+                            ? "Include this color in the estimate and maquette again."
+                            : "Skip this color from the estimate and maquette. Useful for backgrounds that are bare wall."
+                        }
+                      >
+                        {isDisabled ? "Skipped — click to include" : "Skip in estimate"}
+                      </button>
                       {isMix ? (
                         <p className="mix-recipe-line">
                           <span className="mix-badge">mix</span>{" "}
@@ -1554,6 +1617,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                         <select
                           value={effectiveFinishId}
                           onChange={(event) => handleColorFinishChange(color.id, event.target.value)}
+                          disabled={isDisabled}
                         >
                           {selectedBrand.finishes.map((finish) => (
                             <option key={finish.id} value={finish.id}>
@@ -1569,11 +1633,12 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                           min="1"
                           value={colorCoatsOverrides[color.id] ?? (Number.isFinite(parsedCoats) ? parsedCoats : 2)}
                           onChange={(event) => handleColorCoatsChange(color.id, event.target.value)}
+                          disabled={isDisabled}
                         />
                       </label>
                       <div className="estimate-row">
                         <span>{selectedBrand.display_name}</span>
-                        <strong>{colorPlan ? formatContainerPackages(colorPlan) : "--"}</strong>
+                        <strong>{isDisabled ? "Skipped" : (colorPlan ? formatContainerPackages(colorPlan) : "--")}</strong>
                       </div>
                     </div>
                   </article>
@@ -1983,6 +2048,12 @@ function flattenImageToPalette(
 ): string | null {
   if (typeof document === "undefined" || palette.length === 0) return null;
   const out = new Uint8ClampedArray(source.data.length);
+  // Disabled colors stay in the nearest-match search so their assigned
+  // pixels land *somewhere* — we then overwrite those pixels with a
+  // diagonal-stripe hatch (#E5E7EB base, #1F2937 stripes, 2-px-wide
+  // stripes every 6 px) to convey "skipped region, no paint."
+  const HATCH_BASE_R = 229, HATCH_BASE_G = 231, HATCH_BASE_B = 235;
+  const HATCH_STROKE_R = 31, HATCH_STROKE_G = 41, HATCH_STROKE_B = 55;
   // sRGB Euclidean is close enough for paint-by-numbers flattening with small
   // palettes and avoids a full Lab conversion per pixel. Perceptual accuracy
   // is not the goal here — showing muralists roughly what their palette will
@@ -2009,11 +2080,22 @@ function flattenImageToPalette(
         bestIndex = p;
       }
     }
-    const rgb = palette[bestIndex]!.rgb;
-    out[i] = rgb[0];
-    out[i + 1] = rgb[1];
-    out[i + 2] = rgb[2];
-    out[i + 3] = 255;
+    const best = palette[bestIndex]!;
+    if (best.disabled) {
+      const pixelIdx = i >> 2;
+      const x = pixelIdx % source.width;
+      const y = (pixelIdx - x) / source.width;
+      const isStripe = ((x + y) % 6) < 2;
+      out[i] = isStripe ? HATCH_STROKE_R : HATCH_BASE_R;
+      out[i + 1] = isStripe ? HATCH_STROKE_G : HATCH_BASE_G;
+      out[i + 2] = isStripe ? HATCH_STROKE_B : HATCH_BASE_B;
+      out[i + 3] = 255;
+    } else {
+      out[i] = best.rgb[0];
+      out[i + 1] = best.rgb[1];
+      out[i + 2] = best.rgb[2];
+      out[i + 3] = 255;
+    }
   }
   const canvas = document.createElement("canvas");
   canvas.width = source.width;
