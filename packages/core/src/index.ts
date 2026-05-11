@@ -129,6 +129,16 @@ export type ClassifyPaletteOptions = {
   /** Coverage percent threshold that splits mix (kept with recipe, >= threshold)
    * from absorb (silently folded into nearest endpoint, < threshold). */
   mixCoveragePercent: number;
+  /** Ids of colors the user has explicitly locked. Locked colors:
+   *  - Cannot be the absorbed member of a Phase 0 dedup pair (they force
+   *    themselves as keeper when paired with a non-locked color; two locked
+   *    colors are never merged with each other).
+   *  - Cannot be classified as "absorb" in Phase 2 — even when they project
+   *    onto a mixing line and fall below `mixCoveragePercent`, they stay
+   *    as "buy".
+   * Locked colors can still be absorbed INTO from other unlocked clusters,
+   * be a mix endpoint, or be a mix target. */
+  lockedIds?: Set<string>;
 };
 
 export type ClassifiedColor = {
@@ -466,7 +476,7 @@ export function classifyPaletteColors(
   // Here we merge any pair whose Euclidean RGB distance falls below the
   // residual threshold — the lower-coverage member absorbs into the
   // higher-coverage one, silently (no mix recipe).
-  const dedupResult = dedupNearestNeighbors(colors, options.residualThreshold);
+  const dedupResult = dedupNearestNeighbors(colors, options.residualThreshold, options.lockedIds);
   const survivors = dedupResult.survivors;
   const dedupAbsorbs = dedupResult.absorbs; // id -> keeperId
 
@@ -557,6 +567,11 @@ export function classifyPaletteColors(
           ]
         }
       });
+    } else if (options.lockedIds?.has(color.id)) {
+      // Locked colors are protected from absorption — even when they
+      // project onto a mixing line below the coverage threshold, they
+      // stay as their own buy color.
+      classifications.set(color.id, { id: color.id, classification: "buy" });
     } else {
       classifications.set(color.id, {
         id: color.id,
@@ -601,15 +616,18 @@ export function classifyPaletteColors(
 
 function dedupNearestNeighbors(
   colors: ClassifyPaletteInput[],
-  threshold: number
+  threshold: number,
+  lockedIds: Set<string> | undefined
 ): { survivors: ClassifyPaletteInput[]; absorbs: Map<string, string> } {
   const survivors: ClassifyPaletteInput[] = colors.map((color) => ({ ...color }));
   const absorbs = new Map<string, string>();
+  const isLocked = (id: string) => lockedIds?.has(id) ?? false;
 
   // Repeated nearest-pair merge. Each pass picks the tightest pair; the
-  // lower-pixelCount member absorbs into the higher-pixelCount one. Bounded
-  // by colors.length iterations so worst-case is O(N^3) — fine for palettes
-  // under ~100 colors.
+  // lower-pixelCount member absorbs into the higher-pixelCount one (or, when
+  // exactly one member is locked, the locked one is forced as keeper). Two
+  // locked colors are never merged with each other. Bounded by colors.length
+  // iterations so worst-case is O(N^3) — fine for palettes under ~100 colors.
   while (survivors.length > 1) {
     let bestDistance = Infinity;
     let keeperIndex = -1;
@@ -619,6 +637,10 @@ function dedupNearestNeighbors(
       for (let j = i + 1; j < survivors.length; j += 1) {
         const a = survivors[i]!;
         const b = survivors[j]!;
+        // Two locked colors never merge.
+        const aLocked = isLocked(a.id);
+        const bLocked = isLocked(b.id);
+        if (aLocked && bLocked) continue;
         const dx = a.rgb[0] - b.rgb[0];
         const dy = a.rgb[1] - b.rgb[1];
         const dz = a.rgb[2] - b.rgb[2];
@@ -626,12 +648,16 @@ function dedupNearestNeighbors(
         if (distance >= threshold) continue;
         if (distance < bestDistance) {
           bestDistance = distance;
-          // Keeper = the one with more pixels, or lexicographically smaller
-          // id on ties for deterministic test output.
-          if (
-            a.pixelCount > b.pixelCount ||
-            (a.pixelCount === b.pixelCount && a.id.localeCompare(b.id) <= 0)
-          ) {
+          // Keeper choice: locked member always wins; otherwise the one
+          // with more pixels, with lexicographically smaller id breaking
+          // ties for deterministic test output.
+          const aWins = aLocked
+            ? true
+            : bLocked
+              ? false
+              : (a.pixelCount > b.pixelCount ||
+                  (a.pixelCount === b.pixelCount && a.id.localeCompare(b.id) <= 0));
+          if (aWins) {
             keeperIndex = i;
             absorbedIndex = j;
           } else {

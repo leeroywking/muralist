@@ -61,6 +61,12 @@ type PaletteColor = {
    * so the user can re-enable it.
    */
   disabled?: boolean;
+  /**
+   * When true, the color is protected from Auto-combine absorbing it.
+   * Other unlocked colors can still absorb INTO a locked color. Pulled
+   * colors (extracted via art-tap) are always locked by default.
+   */
+  locked?: boolean;
 };
 
 type AnalysisResult = {
@@ -175,6 +181,22 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const sourcePixelsRef = useRef<{ data: Uint8ClampedArray; width: number; height: number } | null>(null);
+  // Raw bucket list from the upload-time survey, kept so the user's
+  // proactive/reactive art-tap can resolve a tapped pixel back to a cluster
+  // and pull it out as a locked palette member. Survives Auto-combine
+  // re-runs at different sensitivities — this is the immutable source of
+  // truth for "what colors were originally in the artwork."
+  const originalClustersRef = useRef<PaletteColor[] | null>(null);
+  // The classifier options that produced the current visible palette, used
+  // when re-running the classifier on art-tap or unlock so the redistribute
+  // step uses the same options as the last Auto-combine pass.
+  const [lastClassifiedOptions, setLastClassifiedOptions] = useState<{
+    residualThreshold: number;
+    mixCoveragePercent: number;
+  } | null>(null);
+  // Most-recently pulled color id, used to drive a brief highlight pulse on
+  // the matching swatch card after an art-tap.
+  const [recentlyPulledId, setRecentlyPulledId] = useState<string | null>(null);
   // `proSettingsHydratedRef` flips to true once /me has populated proSettings
   // so the save-back effect doesn't PATCH the default values before the real
   // server values arrive. `proSettingsSkipNextPushRef` suppresses the PATCH
@@ -396,6 +418,13 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   ]);
 
   useEffect(() => {
+    if (!recentlyPulledId) return;
+    if (typeof window === "undefined") return;
+    const timer = window.setTimeout(() => setRecentlyPulledId(null), 1500);
+    return () => window.clearTimeout(timer);
+  }, [recentlyPulledId]);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
     const source = sourcePixelsRef.current;
     if (!source || paletteColors.length === 0) {
@@ -588,6 +617,16 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
         setPreviewUrl(hydrated.imageDataUrl);
         setFlattenedImageUrl(null);
         sourcePixelsRef.current = null;
+        // Restore the raw cluster set (for art-tap / pull-color) if the
+        // project was saved with it. Empty array for pre-feature projects
+        // — art-tap will no-op silently in that case.
+        originalClustersRef.current = hydrated.originalPaletteColors.length > 0
+          ? hydrated.originalPaletteColors.map((color) => ({ ...color }))
+          : null;
+        setLastClassifiedOptions({
+          residualThreshold: SENSITIVITY_PRESETS.balanced,
+          mixCoveragePercent: proSettings.mixCoveragePercent
+        });
         setFileName(hydrated.name);
         setProjectName(hydrated.name);
         setLoadedProjectId(hydrated.projectId);
@@ -681,6 +720,9 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setColorCoatsOverrides({});
     setFlattenedImageUrl(null);
     sourcePixelsRef.current = null;
+    originalClustersRef.current = null;
+    setLastClassifiedOptions(null);
+    setRecentlyPulledId(null);
     setSanitizedImageBase64(null);
     setThumbnailBase64(null);
     // A new upload means any previously loaded project is no longer the
@@ -702,21 +744,28 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
         setPreviewUrl(sanitizedUrl);
         setSourceAnalysis(analysis);
 
+        // Stash the raw bucket list so the art-tap handler can resolve a
+        // tapped pixel back to a cluster and pull it out as a locked
+        // palette member. Immutable across Auto-combine re-runs.
+        originalClustersRef.current = analysis.colors.map((color) => ({ ...color }));
+
         // Classify-on-upload at the "balanced" preset. We intentionally
         // ignore proSettings.residualThreshold here so the first-experience
         // palette is consistent regardless of any stored user preference;
         // the Auto-combine button still honors proSettings, so users who
         // want a tighter/looser classification can re-run at their
         // preferred sensitivity.
+        const uploadClassifyOptions = {
+          residualThreshold: SENSITIVITY_PRESETS.balanced,
+          mixCoveragePercent: proSettings.mixCoveragePercent
+        };
         const classifierInput = analysis.colors.map((color) => ({
           id: color.id,
           rgb: color.rgb,
           pixelCount: color.pixelCount
         }));
-        const classifiedList = classifyPaletteColors(classifierInput, {
-          residualThreshold: SENSITIVITY_PRESETS.balanced,
-          mixCoveragePercent: proSettings.mixCoveragePercent
-        });
+        const classifiedList = classifyPaletteColors(classifierInput, uploadClassifyOptions);
+        setLastClassifiedOptions(uploadClassifyOptions);
         const { nextColors, mixes } = applyClassification(classifierInput, classifiedList);
         const pixelCountById = new Map(nextColors.map((entry) => [entry.id, entry.pixelCount]));
         const visiblePalette = rebalanceCoverage(
@@ -897,6 +946,172 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     }
   }
 
+  function toggleColorLocked(colorId: string) {
+    setPaletteColors((current) =>
+      current.map((color) =>
+        color.id === colorId
+          ? { ...color, locked: !color.locked }
+          : color
+      )
+    );
+  }
+
+  /**
+   * Pull a raw cluster out of the auto-merged palette as a new locked
+   * standalone swatch. Re-runs `classifyPaletteColors` over the original
+   * cluster set with the now-expanded lockedIds — the classifier
+   * redistributes the other absorbed clusters around the new locked
+   * survivor. See docs/plans/unmerge-colors.md §6-§8.
+   */
+  function pullColorOut(clusterId: string) {
+    const originalClusters = originalClustersRef.current;
+    if (!originalClusters) {
+      setSaveMessage("Pull is unavailable — re-upload the artwork to enable.");
+      return;
+    }
+    const cluster = originalClusters.find((entry) => entry.id === clusterId);
+    if (!cluster) return;
+    // No-op if the cluster is already a visible palette member (either as
+    // its own swatch or because it survived previous classification).
+    if (paletteColors.some((color) => color.id === cluster.id)) {
+      setRecentlyPulledId(cluster.id);
+      return;
+    }
+
+    // Build the new candidate set: current visible palette + the pulled
+    // cluster (locked). Disabled colors are excluded from the classifier
+    // (matching handleAutoCombine's invariant); they pass through
+    // unchanged. The classifier produces a redistributed palette around
+    // the expanded locked set.
+    const pulledColor: PaletteColor = {
+      ...cluster,
+      hex: cluster.hex.toUpperCase(),
+      locked: true,
+      disabled: false
+    };
+
+    const disabledColors = paletteColors.filter((color) => color.disabled);
+    const enabledColors = paletteColors.filter((color) => !color.disabled);
+
+    // Use the immutable raw clusters as the classifier input. This is the
+    // key insight: every Pull re-derives the palette from the original
+    // image's full bucket set, with the user's locked picks as constraints.
+    // Any locked color that's already in `paletteColors` carries forward
+    // because its id is also in the raw clusters.
+    const lockedIdsForReclassify = new Set<string>(
+      enabledColors.filter((color) => color.locked).map((color) => color.id)
+    );
+    lockedIdsForReclassify.add(pulledColor.id);
+
+    const options = lastClassifiedOptions ?? {
+      residualThreshold: SENSITIVITY_PRESETS.balanced,
+      mixCoveragePercent: proSettings.mixCoveragePercent
+    };
+
+    const classifierInput = originalClusters.map((color) => ({
+      id: color.id,
+      rgb: color.rgb,
+      pixelCount: color.pixelCount
+    }));
+    const classifiedList = classifyPaletteColors(classifierInput, {
+      ...options,
+      lockedIds: lockedIdsForReclassify
+    });
+    const { nextColors, mixes } = applyClassification(classifierInput, classifiedList);
+
+    // Re-shape into editor PaletteColor[]: pixel counts come from
+    // applyClassification; hex/rgb come from the original clusters; the
+    // `locked`/`disabled` flags come from the user's existing palette
+    // (with the new pulled color flagged locked).
+    const clusterById = new Map(originalClusters.map((entry) => [entry.id, entry]));
+    const existingFlagsById = new Map<string, { locked?: boolean; disabled?: boolean }>(
+      paletteColors.map((color) => [color.id, { locked: color.locked, disabled: color.disabled }])
+    );
+    existingFlagsById.set(pulledColor.id, { locked: true, disabled: false });
+
+    const pixelCountById = new Map(nextColors.map((entry) => [entry.id, entry.pixelCount]));
+    const reclassifiedPalette: PaletteColor[] = nextColors
+      .map((entry) => {
+        const source = clusterById.get(entry.id);
+        if (!source) return null;
+        const flags = existingFlagsById.get(entry.id) ?? {};
+        return {
+          id: source.id,
+          hex: source.hex.toUpperCase(),
+          rgb: source.rgb,
+          pixelCount: pixelCountById.get(entry.id) ?? source.pixelCount,
+          coveragePercent: 0,
+          ...flags
+        } satisfies PaletteColor;
+      })
+      .filter((entry): entry is PaletteColor => entry !== null);
+
+    // Re-prepend disabled colors that were excluded from the classifier
+    // pass — they pass through unchanged.
+    const nextPalette = rebalanceCoverage(
+      [...reclassifiedPalette, ...disabledColors].sort(
+        (left, right) => right.pixelCount - left.pixelCount
+      )
+    );
+
+    const retainedIds = new Set(nextPalette.map((color) => color.id));
+    const nextClassifications: Record<string, PaletteClassification> = {};
+    for (const entry of classifiedList) {
+      if (!retainedIds.has(entry.id)) continue;
+      nextClassifications[entry.id] = entry.classification;
+    }
+
+    setPaletteColors(nextPalette);
+    setClassifications(nextClassifications);
+    setMixRecipes(mixes);
+    setRecentlyPulledId(pulledColor.id);
+  }
+
+  /**
+   * Map a tap on a preview <img> back to a quantized cluster in
+   * originalClustersRef. Source preview = "proactive" intent; flatten
+   * preview = "reactive" intent; mechanism is identical. See
+   * docs/plans/unmerge-colors.md §7-§8.
+   */
+  function handleArtTap(event: React.MouseEvent<HTMLImageElement>) {
+    const source = sourcePixelsRef.current;
+    const originalClusters = originalClustersRef.current;
+    if (!source || !originalClusters) return;
+
+    const img = event.currentTarget;
+    const rect = img.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const normX = (event.clientX - rect.left) / rect.width;
+    const normY = (event.clientY - rect.top) / rect.height;
+    if (normX < 0 || normX > 1 || normY < 0 || normY > 1) return;
+
+    const srcX = Math.min(source.width - 1, Math.max(0, Math.floor(normX * source.width)));
+    const srcY = Math.min(source.height - 1, Math.max(0, Math.floor(normY * source.height)));
+    const dataIdx = (srcY * source.width + srcX) * 4;
+    const alpha = source.data[dataIdx + 3] ?? 0;
+    if (alpha < 128) return;
+
+    const r = source.data[dataIdx] ?? 0;
+    const g = source.data[dataIdx + 1] ?? 0;
+    const b = source.data[dataIdx + 2] ?? 0;
+    const qr = Math.round(r / 12) * 12;
+    const qg = Math.round(g / 12) * 12;
+    const qb = Math.round(b / 12) * 12;
+
+    // Find the cluster whose stored rgb quantizes to the tapped centroid.
+    // bucketPixels keys by quantized rgb, so each (qr,qg,qb) maps to at
+    // most one cluster.
+    const match = originalClusters.find((cluster) => {
+      const cr = Math.round(cluster.rgb[0] / 12) * 12;
+      const cg = Math.round(cluster.rgb[1] / 12) * 12;
+      const cb = Math.round(cluster.rgb[2] / 12) * 12;
+      return cr === qr && cg === qg && cb === qb;
+    });
+    if (!match) return;
+
+    pullColorOut(match.id);
+  }
+
   function mergeSelectedColors() {
     if (selectedColorIds.length < 2 || !mergeKeeperId) {
       return;
@@ -969,10 +1184,18 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       pixelCount: color.pixelCount
     }));
 
-    const classifiedList = classifyPaletteColors(classifierInput, {
+    const lockedIds = new Set(
+      enabledColors.filter((color) => color.locked).map((color) => color.id)
+    );
+    const autoCombineOptions = {
       residualThreshold: proSettings.residualThreshold,
       mixCoveragePercent: proSettings.mixCoveragePercent
+    };
+    const classifiedList = classifyPaletteColors(classifierInput, {
+      ...autoCombineOptions,
+      lockedIds
     });
+    setLastClassifiedOptions(autoCombineOptions);
     const { nextColors, mixes, absorbedCount } = applyClassification(classifierInput, classifiedList);
 
     if (absorbedCount === 0 && mixes.length === 0) {
@@ -1063,6 +1286,11 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   function buildEditorSnapshot(): EditorSnapshot {
     return {
       paletteColors,
+      // Persist the immutable upload-time raw cluster set so a future
+      // session's art-tap / pull-color flow has the merge graph to work
+      // against. Omit when null (no raw clusters captured yet, e.g. for a
+      // session that loaded a legacy project pre-feature).
+      originalPaletteColors: originalClustersRef.current ?? undefined,
       classifications,
       mixRecipes,
       colorFinishOverrides,
@@ -1570,10 +1798,12 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 const isMix = classification === "mix";
                 const recipe = isMix ? mixRecipes.find((entry) => entry.targetColorId === color.id) : undefined;
                 const isDisabled = color.disabled === true;
+                const isLocked = color.locked === true;
+                const isRecentlyPulled = recentlyPulledId === color.id;
 
                 return (
                   <article
-                    className={`swatch-card ${isSelected ? "swatch-card-selected" : ""} ${isMix ? "swatch-card-mix" : ""} ${isDisabled ? "swatch-card-disabled" : ""}`}
+                    className={`swatch-card ${isSelected ? "swatch-card-selected" : ""} ${isMix ? "swatch-card-mix" : ""} ${isDisabled ? "swatch-card-disabled" : ""} ${isLocked ? "swatch-card-locked" : ""} ${isRecentlyPulled ? "swatch-card-just-pulled" : ""}`}
                     key={color.id}
                   >
                     <button
@@ -1586,24 +1816,42 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                         className={`swatch ${isDisabled ? "swatch-disabled-hatch" : ""}`}
                         style={isDisabled ? undefined : { backgroundColor: color.hex }}
                       />
+                      {isLocked ? (
+                        <span className="swatch-locked-overlay" aria-hidden="true">🔒</span>
+                      ) : null}
                     </button>
                     <div className="swatch-body">
                       <div className="swatch-title-row">
                         <strong>{color.hex}</strong>
                         <span>{color.coveragePercent.toFixed(1)}%</span>
                       </div>
-                      <button
-                        className={`swatch-skip-pill ${isDisabled ? "is-skipped" : ""}`}
-                        onClick={() => toggleColorDisabled(color.id)}
-                        type="button"
-                        title={
-                          isDisabled
-                            ? "Include this color in the estimate and maquette again."
-                            : "Skip this color from the estimate and maquette. Useful for backgrounds that are bare wall."
-                        }
-                      >
-                        {isDisabled ? "Skipped — click to include" : "Skip in estimate"}
-                      </button>
+                      <div className="swatch-pill-row">
+                        <button
+                          className={`swatch-skip-pill ${isDisabled ? "is-skipped" : ""}`}
+                          onClick={() => toggleColorDisabled(color.id)}
+                          type="button"
+                          title={
+                            isDisabled
+                              ? "Include this color in the estimate and maquette again."
+                              : "Skip this color from the estimate and maquette. Useful for backgrounds that are bare wall."
+                          }
+                        >
+                          {isDisabled ? "Skipped — click to include" : "Skip in estimate"}
+                        </button>
+                        <button
+                          className={`swatch-lock-pill ${isLocked ? "is-locked" : ""}`}
+                          onClick={() => toggleColorLocked(color.id)}
+                          type="button"
+                          title={
+                            isLocked
+                              ? "Unlock this color so Auto-combine can merge it again."
+                              : "Lock this color so Auto-combine won't merge it away."
+                          }
+                          aria-label={isLocked ? "Unlock color" : "Lock color"}
+                        >
+                          {isLocked ? "🔒 Locked" : "🔓 Lock"}
+                        </button>
+                      </div>
                       {isMix ? (
                         <p className="mix-recipe-line">
                           <span className="mix-badge">mix</span>{" "}
@@ -1652,6 +1900,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 originalImageUrl={previewUrl}
                 reducedImageUrl={flattenedImageUrl}
                 onArtistNotesChange={setArtistNotes}
+                onArtTap={handleArtTap}
               />
             ) : null}
           </>
@@ -1671,12 +1920,14 @@ function FieldSheet({
   model,
   originalImageUrl,
   reducedImageUrl,
-  onArtistNotesChange
+  onArtistNotesChange,
+  onArtTap
 }: {
   model: FieldSheetModel;
   originalImageUrl: string | null;
   reducedImageUrl: string | null;
   onArtistNotesChange: (notes: string) => void;
+  onArtTap?: (event: React.MouseEvent<HTMLImageElement>) => void;
 }) {
   const gridLines = buildGridLinePositions(model.wall, model.grid);
   const sourceAspectRatio = model.sourceSize.widthPx / model.sourceSize.heightPx;
@@ -1701,6 +1952,8 @@ function FieldSheet({
             imageUrl={originalImageUrl}
             label="Original artwork"
             note="Source ratio preserved. Grid spacing may differ by direction when the wall ratio does not match."
+            onTap={onArtTap}
+            tapHint="Tap a color you want to keep — we'll pull it back into the palette."
           />
           <GridPreview
             aspectRatio={wallAspectRatio}
@@ -1709,6 +1962,8 @@ function FieldSheet({
             imageUrl={reducedImageUrl}
             label="Reduced mural preview"
             note="Fit to entered wall dimensions. Grid cells represent real-world spacing."
+            onTap={onArtTap}
+            tapHint="Tap a region whose color is wrong — we'll pull the right color in."
           />
           <dl className="field-sheet-scale">
             <div>
@@ -1801,7 +2056,9 @@ function GridPreview({
   imageFit,
   imageUrl,
   label,
-  note
+  note,
+  onTap,
+  tapHint
 }: {
   aspectRatio: number;
   gridLines: { vertical: number[]; horizontal: number[] };
@@ -1809,15 +2066,23 @@ function GridPreview({
   imageUrl: string | null;
   label: string;
   note: string;
+  onTap?: (event: React.MouseEvent<HTMLImageElement>) => void;
+  tapHint?: string;
 }) {
+  const isInteractive = Boolean(onTap && imageUrl);
   return (
     <figure className="grid-preview">
+      {isInteractive && tapHint ? (
+        <p className="grid-preview-tap-hint" aria-hidden="true">{tapHint}</p>
+      ) : null}
       <div className="grid-preview-frame" style={{ aspectRatio }}>
         {imageUrl ? (
           <img
             alt={label}
-            className={`grid-preview-image grid-preview-image-${imageFit}`}
+            className={`grid-preview-image grid-preview-image-${imageFit} ${isInteractive ? "is-tappable" : ""}`}
             src={imageUrl}
+            onClick={isInteractive ? onTap : undefined}
+            role={isInteractive ? "button" : undefined}
           />
         ) : (
           <div className="grid-preview-empty">Preview will appear here.</div>
