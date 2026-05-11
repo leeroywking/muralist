@@ -327,3 +327,46 @@ For:
 - Cursor style + (optional) hint banner CSS
 
 Net reduction: ~50-100 LOC. The classifier `lockedIds` plumbing remains the biggest single piece of work.
+
+## 8. 2026-05-11 — Workflow framing: proactive (source) vs reactive (flatten)
+
+User clarification on the natural user journey, refining §7. **Both previews remain tappable with identical behavior** — the addendum is about affordance hints + copy, not implementation. The framing also serves as the educational story for the in-app help banner.
+
+### Two phases of the same action
+
+| Phase | Surface | User intent | Hint copy |
+|---|---|---|---|
+| **Proactive** | Source preview (the original uploaded art) | "These are colors I know matter for this piece — I want them in my palette regardless of how the classifier ranks them." | "Tap a color you want to keep. We'll merge other colors around it." |
+| **Reactive** | Flatten / reduced preview | "Auto-merge over-collapsed something — let me fix it." | "Tap a region that's the wrong color. We'll pull that color back into the palette." |
+
+Both invocations land in the same `pullColorOut(clusterId)` action. The classifier respects the now-locked color and redistributes other clusters around it. Mechanically identical — workflow-wise, just two natural entry points.
+
+### Natural user journey
+
+1. **Upload.** Classifier runs at balanced sensitivity (existing classify-on-upload behavior from PR #10). Initial palette appears in the swatch grid.
+2. **Proactive picks (optional).** User scans the source preview and taps the colors they consider essential — e.g. the viking's brown face, the red sail. Each tap pulls that color out as a locked swatch, re-runs the classifier, and updates the palette around the lock.
+3. **Reactive fixes.** User scans the flatten preview for regions that don't match the source. Taps to pull each problem color out.
+4. **Re-classify if needed.** Manually click Auto-combine to re-pass at a different sensitivity. Locks are preserved across the re-classify.
+5. **Skip / Disable for non-paint regions** (the existing feature from PR #11): user can skip bare-wall background colors from the estimate.
+
+Step 2 is optional — users who don't want to think hard get a sensible default palette from step 1 and can fix what's wrong in step 3. Power users go straight to step 2.
+
+### Hint banners
+
+- Above the source preview panel: "Tap a color you want to keep" with a subtle ⓘ tooltip explaining the proactive workflow.
+- Above the flatten preview panel: "Tap a region to fix its color" with a subtle ⓘ tooltip explaining the reactive workflow.
+- Both panels share a `cursor: pointer` style on the `<img>` element so the affordance is obvious from hover.
+
+### No code path divergence
+
+`handleArtTap` does not need to know which preview was tapped. The behavior is identical: sample the source pixel from `sourcePixelsRef.current` at the click coords, quantize, look up the cluster, call `pullColorOut`. The "proactive vs reactive" distinction lives only in the UI copy and the user's head.
+
+### What this clarifies
+
+- We do NOT remove or defer the classify-on-upload step from PR #10. Step 1 still produces an initial balanced palette. The proactive/reactive interactions iterate on it.
+- The Auto-combine button is repositioned in copy: tooltip becomes "Re-run auto-merge at current sensitivity. Locked colors are preserved." Same code, same behavior.
+- No new state, no new actions, no new components.
+
+### What stays from §7
+
+Everything. Implementation is unchanged. §8 is purely the human-facing framing layer on top.
