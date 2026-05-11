@@ -13,10 +13,8 @@ import type {
   WorkspaceContent
 } from "@muralist/core";
 import {
-  applyClassification,
   applyMixesToCoverage,
   buildMaquetteFileName,
-  classifyPaletteColors,
   compareAspectRatios,
   deriveColorAreaEstimates,
   deriveGridSpec,
@@ -46,6 +44,7 @@ import {
 } from "./editorPersistence";
 import { blobToBase64, sanitizeUpload, UploadSanitizationError } from "./uploadPipeline";
 import type { UploadLimits } from "@muralist/config";
+import { requestClassify, requestFlatten } from "./paletteWorkerClient";
 
 type PaletteColor = {
   id: string;
@@ -197,6 +196,10 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   // Most-recently pulled color id, used to drive a brief highlight pulse on
   // the matching swatch card after an art-tap.
   const [recentlyPulledId, setRecentlyPulledId] = useState<string | null>(null);
+  // True while the worker is computing a classify pass (pullColorOut or
+  // handleAutoCombine). Gates art-tap so concurrent pulls don't race on
+  // stale paletteColors snapshots.
+  const [isPullInFlight, setIsPullInFlight] = useState(false);
   // `proSettingsHydratedRef` flips to true once /me has populated proSettings
   // so the save-back effect doesn't PATCH the default values before the real
   // server values arrive. `proSettingsSkipNextPushRef` suppresses the PATCH
@@ -438,23 +441,52 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     }
     setIsFlattenComputing(true);
     let cancelled = false;
-    const compute = () => {
-      const flat = flattenImageToPalette(source, paletteColors);
-      if (!cancelled) {
-        setFlattenedImageUrl(flat);
+    let blobUrl: string | null = null;
+
+    // Off-thread: post the source pixels + visible palette to the worker;
+    // the worker returns the recolored pixel buffer; we paint it to a
+    // canvas and toBlob → object URL on the main thread (cheaper than the
+    // worker's pixel loop). UI remains responsive throughout.
+    const paletteForWorker = paletteColors.map((color) => ({
+      rgb: color.rgb,
+      disabled: color.disabled
+    }));
+    requestFlatten(source.data, source.width, source.height, paletteForWorker)
+      .then(async ({ output }) => {
+        if (cancelled) return;
+        const canvas = document.createElement("canvas");
+        canvas.width = source.width;
+        canvas.height = source.height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          setIsFlattenComputing(false);
+          return;
+        }
+        // Copy the transferred buffer into a fresh Uint8ClampedArray so its
+        // backing storage is a plain ArrayBuffer (the worker's transferred
+        // buffer is typed as ArrayBufferLike by TS, which ImageData rejects).
+        const imageDataBytes = new Uint8ClampedArray(output);
+        ctx.putImageData(new ImageData(imageDataBytes, source.width, source.height), 0, 0);
+        const blob: Blob | null = await new Promise((resolve) =>
+          canvas.toBlob((result) => resolve(result), "image/png")
+        );
+        if (cancelled) return;
+        if (!blob) {
+          setIsFlattenComputing(false);
+          return;
+        }
+        blobUrl = URL.createObjectURL(blob);
+        setFlattenedImageUrl(blobUrl);
         setIsFlattenComputing(false);
-      }
-    };
-    // requestAnimationFrame fires more predictably than requestIdleCallback
-    // and is supported everywhere. We yield one frame so the rebuilding
-    // overlay paints first; then the heavy per-pixel loop runs.
-    const handle = window.requestAnimationFrame(() => {
-      if (cancelled) return;
-      compute();
-    });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setIsFlattenComputing(false);
+      });
+
     return () => {
       cancelled = true;
-      window.cancelAnimationFrame(handle);
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
     };
   }, [paletteColors]);
 
@@ -768,9 +800,14 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
           rgb: color.rgb,
           pixelCount: color.pixelCount
         }));
-        const classifiedList = classifyPaletteColors(classifierInput, uploadClassifyOptions);
+        // Off-thread classify so the upload transition doesn't block the UI
+        // on busy images.
+        const { classified: classifiedList, nextColors, mixes } = await requestClassify(
+          classifierInput,
+          uploadClassifyOptions,
+          []
+        );
         setLastClassifiedOptions(uploadClassifyOptions);
-        const { nextColors, mixes } = applyClassification(classifierInput, classifiedList);
         const pixelCountById = new Map(nextColors.map((entry) => [entry.id, entry.pixelCount]));
         const visiblePalette = rebalanceCoverage(
           analysis.colors
@@ -962,17 +999,18 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
 
   /**
    * Pull a raw cluster out of the auto-merged palette as a new locked
-   * standalone swatch. Re-runs `classifyPaletteColors` over the original
-   * cluster set with the now-expanded lockedIds — the classifier
-   * redistributes the other absorbed clusters around the new locked
-   * survivor. See docs/plans/unmerge-colors.md §6-§8.
+   * standalone swatch. Re-runs `classifyPaletteColors` (off-thread in the
+   * palette worker) over the original cluster set with the now-expanded
+   * lockedIds — the classifier redistributes the other absorbed clusters
+   * around the new locked survivor. See docs/plans/unmerge-colors.md §6-§8.
    */
-  function pullColorOut(clusterId: string) {
+  async function pullColorOut(clusterId: string) {
     const originalClusters = originalClustersRef.current;
     if (!originalClusters) {
       setSaveMessage("Pull is unavailable — re-upload the artwork to enable.");
       return;
     }
+    if (isPullInFlight) return;
     const cluster = originalClusters.find((entry) => entry.id === clusterId);
     if (!cluster) return;
     // No-op if the cluster is already a visible palette member (either as
@@ -982,93 +1020,75 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       return;
     }
 
-    // Build the new candidate set: current visible palette + the pulled
-    // cluster (locked). Disabled colors are excluded from the classifier
-    // (matching handleAutoCombine's invariant); they pass through
-    // unchanged. The classifier produces a redistributed palette around
-    // the expanded locked set.
-    const pulledColor: PaletteColor = {
-      ...cluster,
-      hex: cluster.hex.toUpperCase(),
-      locked: true,
-      disabled: false
-    };
+    setIsPullInFlight(true);
+    try {
+      const enabledColors = paletteColors.filter((color) => !color.disabled);
+      const disabledColors = paletteColors.filter((color) => color.disabled);
 
-    const disabledColors = paletteColors.filter((color) => color.disabled);
-    const enabledColors = paletteColors.filter((color) => !color.disabled);
+      const lockedIdsForReclassify = new Set<string>(
+        enabledColors.filter((color) => color.locked).map((color) => color.id)
+      );
+      lockedIdsForReclassify.add(cluster.id);
 
-    // Use the immutable raw clusters as the classifier input. This is the
-    // key insight: every Pull re-derives the palette from the original
-    // image's full bucket set, with the user's locked picks as constraints.
-    // Any locked color that's already in `paletteColors` carries forward
-    // because its id is also in the raw clusters.
-    const lockedIdsForReclassify = new Set<string>(
-      enabledColors.filter((color) => color.locked).map((color) => color.id)
-    );
-    lockedIdsForReclassify.add(pulledColor.id);
+      const options = lastClassifiedOptions ?? {
+        residualThreshold: SENSITIVITY_PRESETS.balanced,
+        mixCoveragePercent: proSettings.mixCoveragePercent
+      };
 
-    const options = lastClassifiedOptions ?? {
-      residualThreshold: SENSITIVITY_PRESETS.balanced,
-      mixCoveragePercent: proSettings.mixCoveragePercent
-    };
+      const classifierInput = originalClusters.map((color) => ({
+        id: color.id,
+        rgb: color.rgb,
+        pixelCount: color.pixelCount
+      }));
+      const { classified, nextColors, mixes } = await requestClassify(
+        classifierInput,
+        options,
+        lockedIdsForReclassify
+      );
 
-    const classifierInput = originalClusters.map((color) => ({
-      id: color.id,
-      rgb: color.rgb,
-      pixelCount: color.pixelCount
-    }));
-    const classifiedList = classifyPaletteColors(classifierInput, {
-      ...options,
-      lockedIds: lockedIdsForReclassify
-    });
-    const { nextColors, mixes } = applyClassification(classifierInput, classifiedList);
+      const clusterById = new Map(originalClusters.map((entry) => [entry.id, entry]));
+      const existingFlagsById = new Map<string, { locked?: boolean; disabled?: boolean }>(
+        paletteColors.map((color) => [color.id, { locked: color.locked, disabled: color.disabled }])
+      );
+      existingFlagsById.set(cluster.id, { locked: true, disabled: false });
 
-    // Re-shape into editor PaletteColor[]: pixel counts come from
-    // applyClassification; hex/rgb come from the original clusters; the
-    // `locked`/`disabled` flags come from the user's existing palette
-    // (with the new pulled color flagged locked).
-    const clusterById = new Map(originalClusters.map((entry) => [entry.id, entry]));
-    const existingFlagsById = new Map<string, { locked?: boolean; disabled?: boolean }>(
-      paletteColors.map((color) => [color.id, { locked: color.locked, disabled: color.disabled }])
-    );
-    existingFlagsById.set(pulledColor.id, { locked: true, disabled: false });
+      const pixelCountById = new Map(nextColors.map((entry) => [entry.id, entry.pixelCount]));
+      const reclassifiedPalette: PaletteColor[] = nextColors
+        .map((entry) => {
+          const source = clusterById.get(entry.id);
+          if (!source) return null;
+          const flags = existingFlagsById.get(entry.id) ?? {};
+          return {
+            id: source.id,
+            hex: source.hex.toUpperCase(),
+            rgb: source.rgb,
+            pixelCount: pixelCountById.get(entry.id) ?? source.pixelCount,
+            coveragePercent: 0,
+            ...flags
+          } satisfies PaletteColor;
+        })
+        .filter((entry): entry is PaletteColor => entry !== null);
 
-    const pixelCountById = new Map(nextColors.map((entry) => [entry.id, entry.pixelCount]));
-    const reclassifiedPalette: PaletteColor[] = nextColors
-      .map((entry) => {
-        const source = clusterById.get(entry.id);
-        if (!source) return null;
-        const flags = existingFlagsById.get(entry.id) ?? {};
-        return {
-          id: source.id,
-          hex: source.hex.toUpperCase(),
-          rgb: source.rgb,
-          pixelCount: pixelCountById.get(entry.id) ?? source.pixelCount,
-          coveragePercent: 0,
-          ...flags
-        } satisfies PaletteColor;
-      })
-      .filter((entry): entry is PaletteColor => entry !== null);
+      const nextPalette = rebalanceCoverage(
+        [...reclassifiedPalette, ...disabledColors].sort(
+          (left, right) => right.pixelCount - left.pixelCount
+        )
+      );
 
-    // Re-prepend disabled colors that were excluded from the classifier
-    // pass — they pass through unchanged.
-    const nextPalette = rebalanceCoverage(
-      [...reclassifiedPalette, ...disabledColors].sort(
-        (left, right) => right.pixelCount - left.pixelCount
-      )
-    );
+      const retainedIds = new Set(nextPalette.map((color) => color.id));
+      const nextClassifications: Record<string, PaletteClassification> = {};
+      for (const entry of classified) {
+        if (!retainedIds.has(entry.id)) continue;
+        nextClassifications[entry.id] = entry.classification;
+      }
 
-    const retainedIds = new Set(nextPalette.map((color) => color.id));
-    const nextClassifications: Record<string, PaletteClassification> = {};
-    for (const entry of classifiedList) {
-      if (!retainedIds.has(entry.id)) continue;
-      nextClassifications[entry.id] = entry.classification;
+      setPaletteColors(nextPalette);
+      setClassifications(nextClassifications);
+      setMixRecipes(mixes);
+      setRecentlyPulledId(cluster.id);
+    } finally {
+      setIsPullInFlight(false);
     }
-
-    setPaletteColors(nextPalette);
-    setClassifications(nextClassifications);
-    setMixRecipes(mixes);
-    setRecentlyPulledId(pulledColor.id);
   }
 
   /**
@@ -1164,7 +1184,8 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setMixRecipes([]);
   }
 
-  function handleAutoCombine() {
+  async function handleAutoCombine() {
+    if (isPullInFlight) return;
     // Disabled colors bypass the classifier entirely so they don't pull
     // into mix recipes or get re-absorbed; they pass through to the next
     // palette as-is, with their classification preserved.
@@ -1189,61 +1210,66 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       residualThreshold: proSettings.residualThreshold,
       mixCoveragePercent: proSettings.mixCoveragePercent
     };
-    const classifiedList = classifyPaletteColors(classifierInput, {
-      ...autoCombineOptions,
-      lockedIds
-    });
-    setLastClassifiedOptions(autoCombineOptions);
-    const { nextColors, mixes, absorbedCount } = applyClassification(classifierInput, classifiedList);
 
-    if (absorbedCount === 0 && mixes.length === 0) {
-      setSaveMessage("Nothing to auto-combine — no gradient or mix members detected.");
-      return;
-    }
+    setIsPullInFlight(true);
+    try {
+      const { classified: classifiedList, nextColors, mixes, absorbedCount } = await requestClassify(
+        classifierInput,
+        autoCombineOptions,
+        lockedIds
+      );
+      setLastClassifiedOptions(autoCombineOptions);
 
-    const pixelCountById = new Map(nextColors.map((entry) => [entry.id, entry.pixelCount]));
-    const nextPalette: PaletteColor[] = [
-      ...enabledColors
-        .filter((color) => pixelCountById.has(color.id))
-        .map((color) => ({ ...color, pixelCount: pixelCountById.get(color.id)! })),
-      ...disabledColors
-    ]
-      .sort((left, right) => right.pixelCount - left.pixelCount);
-
-    const rebalanced = rebalanceCoverage(nextPalette);
-    const retainedIds = new Set(rebalanced.map((color) => color.id));
-
-    setColorFinishOverrides((current) => {
-      const next: Record<string, string> = {};
-      for (const [colorId, finishId] of Object.entries(current)) {
-        if (retainedIds.has(colorId)) next[colorId] = finishId;
+      if (absorbedCount === 0 && mixes.length === 0) {
+        setSaveMessage("Nothing to auto-combine — no gradient or mix members detected.");
+        return;
       }
-      return next;
-    });
-    setColorCoatsOverrides((current) => {
-      const next: Record<string, number> = {};
-      for (const [colorId, coatsValue] of Object.entries(current)) {
-        if (retainedIds.has(colorId)) next[colorId] = coatsValue;
+
+      const pixelCountById = new Map(nextColors.map((entry) => [entry.id, entry.pixelCount]));
+      const nextPalette: PaletteColor[] = [
+        ...enabledColors
+          .filter((color) => pixelCountById.has(color.id))
+          .map((color) => ({ ...color, pixelCount: pixelCountById.get(color.id)! })),
+        ...disabledColors
+      ].sort((left, right) => right.pixelCount - left.pixelCount);
+
+      const rebalanced = rebalanceCoverage(nextPalette);
+      const retainedIds = new Set(rebalanced.map((color) => color.id));
+
+      setColorFinishOverrides((current) => {
+        const next: Record<string, string> = {};
+        for (const [colorId, finishId] of Object.entries(current)) {
+          if (retainedIds.has(colorId)) next[colorId] = finishId;
+        }
+        return next;
+      });
+      setColorCoatsOverrides((current) => {
+        const next: Record<string, number> = {};
+        for (const [colorId, coatsValue] of Object.entries(current)) {
+          if (retainedIds.has(colorId)) next[colorId] = coatsValue;
+        }
+        return next;
+      });
+      setSelectedColorIds([]);
+      setMergeKeeperId("");
+
+      const nextClassifications: Record<string, PaletteClassification> = {};
+      for (const entry of classifiedList) {
+        if (!retainedIds.has(entry.id)) continue;
+        nextClassifications[entry.id] = entry.classification;
       }
-      return next;
-    });
-    setSelectedColorIds([]);
-    setMergeKeeperId("");
 
-    const nextClassifications: Record<string, PaletteClassification> = {};
-    for (const entry of classifiedList) {
-      if (!retainedIds.has(entry.id)) continue;
-      nextClassifications[entry.id] = entry.classification;
+      setPaletteColors(rebalanced);
+      setClassifications(nextClassifications);
+      setMixRecipes(mixes);
+
+      const buyCount = Object.values(nextClassifications).filter((entry) => entry === "buy").length;
+      setSaveMessage(
+        `Kept ${buyCount} to buy, flagged ${mixes.length} to mix, absorbed ${absorbedCount} gradient ${absorbedCount === 1 ? "color" : "colors"}.`
+      );
+    } finally {
+      setIsPullInFlight(false);
     }
-
-    setPaletteColors(rebalanced);
-    setClassifications(nextClassifications);
-    setMixRecipes(mixes);
-
-    const buyCount = Object.values(nextClassifications).filter((entry) => entry === "buy").length;
-    setSaveMessage(
-      `Kept ${buyCount} to buy, flagged ${mixes.length} to mix, absorbed ${absorbedCount} gradient ${absorbedCount === 1 ? "color" : "colors"}.`
-    );
   }
 
   function saveMergedChoices() {
@@ -1898,6 +1924,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 originalImageUrl={previewUrl}
                 reducedImageUrl={flattenedImageUrl}
                 isReducedComputing={isFlattenComputing}
+                isPickDisabled={isPullInFlight}
                 onArtistNotesChange={setArtistNotes}
                 onPickColor={handleArtPick}
               />
@@ -1920,6 +1947,7 @@ function FieldSheet({
   originalImageUrl,
   reducedImageUrl,
   isReducedComputing,
+  isPickDisabled,
   onArtistNotesChange,
   onPickColor
 }: {
@@ -1927,6 +1955,7 @@ function FieldSheet({
   originalImageUrl: string | null;
   reducedImageUrl: string | null;
   isReducedComputing?: boolean;
+  isPickDisabled?: boolean;
   onArtistNotesChange: (notes: string) => void;
   onPickColor?: (normX: number, normY: number) => void;
 }) {
@@ -1954,6 +1983,7 @@ function FieldSheet({
             label="Original artwork"
             note="Source ratio preserved. Grid spacing may differ by direction when the wall ratio does not match."
             onPickColor={onPickColor}
+            isPickDisabled={isPickDisabled}
             tapHint="Press and drag on a color to fine-tune, release to pull it into the palette."
           />
           <GridPreview
@@ -1965,6 +1995,7 @@ function FieldSheet({
             note="Fit to entered wall dimensions. Grid cells represent real-world spacing."
             isComputingOverlay={isReducedComputing}
             onPickColor={onPickColor}
+            isPickDisabled={isPickDisabled}
             tapHint="Press and drag on a wrong-looking region, release to fix it."
           />
           <dl className="field-sheet-scale">
@@ -2061,7 +2092,8 @@ function GridPreview({
   note,
   onPickColor,
   tapHint,
-  isComputingOverlay
+  isComputingOverlay,
+  isPickDisabled
 }: {
   aspectRatio: number;
   gridLines: { vertical: number[]; horizontal: number[] };
@@ -2072,8 +2104,9 @@ function GridPreview({
   onPickColor?: (normX: number, normY: number) => void;
   tapHint?: string;
   isComputingOverlay?: boolean;
+  isPickDisabled?: boolean;
 }) {
-  const isInteractive = Boolean(onPickColor && imageUrl);
+  const isInteractive = Boolean(onPickColor && imageUrl) && !isPickDisabled;
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [loupe, setLoupe] = useState<{
     normX: number;
@@ -2421,70 +2454,6 @@ function formatPartialGridNotice(grid: GridSpec) {
     parts.push(`last row ${roundToTenths(grid.finalRowHeightFt)} ft tall`);
   }
   return parts.join("; ");
-}
-
-function flattenImageToPalette(
-  source: { data: Uint8ClampedArray; width: number; height: number },
-  palette: PaletteColor[]
-): string | null {
-  if (typeof document === "undefined" || palette.length === 0) return null;
-  const out = new Uint8ClampedArray(source.data.length);
-  // Disabled colors stay in the nearest-match search so their assigned
-  // pixels land *somewhere* — we then overwrite those pixels with a
-  // diagonal-stripe hatch (#E5E7EB base, #1F2937 stripes, 2-px-wide
-  // stripes every 6 px) to convey "skipped region, no paint."
-  const HATCH_BASE_R = 229, HATCH_BASE_G = 231, HATCH_BASE_B = 235;
-  const HATCH_STROKE_R = 31, HATCH_STROKE_G = 41, HATCH_STROKE_B = 55;
-  // sRGB Euclidean is close enough for paint-by-numbers flattening with small
-  // palettes and avoids a full Lab conversion per pixel. Perceptual accuracy
-  // is not the goal here — showing muralists roughly what their palette will
-  // render as is.
-  for (let i = 0; i < source.data.length; i += 4) {
-    const alpha = source.data[i + 3] ?? 0;
-    if (alpha < 128) {
-      out[i + 3] = 0;
-      continue;
-    }
-    const r = source.data[i] ?? 0;
-    const g = source.data[i + 1] ?? 0;
-    const b = source.data[i + 2] ?? 0;
-    let bestIndex = 0;
-    let bestDistance = Infinity;
-    for (let p = 0; p < palette.length; p += 1) {
-      const [pr, pg, pb] = palette[p]!.rgb;
-      const dr = r - pr;
-      const dg = g - pg;
-      const db = b - pb;
-      const d = dr * dr + dg * dg + db * db;
-      if (d < bestDistance) {
-        bestDistance = d;
-        bestIndex = p;
-      }
-    }
-    const best = palette[bestIndex]!;
-    if (best.disabled) {
-      const pixelIdx = i >> 2;
-      const x = pixelIdx % source.width;
-      const y = (pixelIdx - x) / source.width;
-      const isStripe = ((x + y) % 6) < 2;
-      out[i] = isStripe ? HATCH_STROKE_R : HATCH_BASE_R;
-      out[i + 1] = isStripe ? HATCH_STROKE_G : HATCH_BASE_G;
-      out[i + 2] = isStripe ? HATCH_STROKE_B : HATCH_BASE_B;
-      out[i + 3] = 255;
-    } else {
-      out[i] = best.rgb[0];
-      out[i + 1] = best.rgb[1];
-      out[i + 2] = best.rgb[2];
-      out[i + 3] = 255;
-    }
-  }
-  const canvas = document.createElement("canvas");
-  canvas.width = source.width;
-  canvas.height = source.height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
-  ctx.putImageData(new ImageData(out, source.width, source.height), 0, 0);
-  return canvas.toDataURL("image/png");
 }
 
 function formatOunces(requiredGallons: number) {
