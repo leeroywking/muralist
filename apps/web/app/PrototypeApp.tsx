@@ -145,7 +145,13 @@ const DEFAULT_PRO_SETTINGS: ProSettings = {
 
 const maxDimension = 320;
 const maxSamplePixels = 22000;
-const paletteLimit = 50;
+// Initial-survey palette reduction is by *color difference*, not popularity.
+// Buckets closer than this Euclidean RGB distance fold together; anything more
+// distinct is kept regardless of how little of the image it covers — so small,
+// vivid regions (a flower's yellow center) survive instead of being cut by a
+// top-N popularity slice. 24 sits just above the /12 quantization floor and
+// matches the "conservative" auto-combine units.
+const minColorDistance = 24;
 const savedMergePlanKey = "muralist.saved-merge-plan";
 const proSettingsKey = "muralist.pro-settings";
 
@@ -1207,7 +1213,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
           <div className="metrics">
             <div>
               <span className="metric-label">Palette capture</span>
-              <strong>Top {paletteLimit} colors max</strong>
+              <strong>By color difference</strong>
             </div>
             <div>
               <span className="metric-label">Brand default</span>
@@ -1888,10 +1894,10 @@ function analyzePixels(
   }
 
   const initialClusters = bucketPixels(sampled);
+  const distinctClusters = clusterByColorDistance(initialClusters, minColorDistance);
   const colors = rebalanceCoverage(
-    initialClusters
+    distinctClusters
       .sort((left, right) => right.pixelCount - left.pixelCount)
-      .slice(0, paletteLimit)
       .map((cluster, index) => ({
         id: `color-${index + 1}`,
         hex: rgbToHex(cluster.rgb),
@@ -1983,6 +1989,41 @@ function bucketPixels(pixels: [number, number, number][]) {
   }
 
   return Array.from(buckets.values());
+}
+
+// Reduce raw quantized buckets to a palette by color difference, not coverage.
+// Walk buckets from most to least common; keep each one that is at least
+// `minDistance` (Euclidean RGB) from every color already kept, otherwise fold
+// its pixels into the nearest kept color. There is no popularity cut — a small
+// but distinct color survives because it is far from everything else, however
+// little of the image it covers. Count-ordered so the dominant color in each
+// neighborhood becomes its representative. O(N·K), N = buckets, K = kept.
+function clusterByColorDistance(clusters: Cluster[], minDistance: number): Cluster[] {
+  const kept: Cluster[] = [];
+
+  for (const cluster of [...clusters].sort((left, right) => right.pixelCount - left.pixelCount)) {
+    let nearest: Cluster | null = null;
+    let nearestDistance = Infinity;
+
+    for (const candidate of kept) {
+      const dx = candidate.rgb[0] - cluster.rgb[0];
+      const dy = candidate.rgb[1] - cluster.rgb[1];
+      const dz = candidate.rgb[2] - cluster.rgb[2];
+      const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = candidate;
+      }
+    }
+
+    if (nearest && nearestDistance < minDistance) {
+      nearest.pixelCount += cluster.pixelCount;
+    } else {
+      kept.push({ rgb: [...cluster.rgb], pixelCount: cluster.pixelCount });
+    }
+  }
+
+  return kept;
 }
 
 function quantizeChannel(channel: number) {
