@@ -1290,7 +1290,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
             />
             <span className="upload-title">Choose Image</span>
             <span className="upload-copy">
-              PNG, JPG, WEBP, and other browser-supported image formats.
+              PNG, JPG, WEBP, SVG, and other browser-supported image formats.
             </span>
           </label>
 
