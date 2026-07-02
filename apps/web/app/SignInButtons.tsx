@@ -167,7 +167,7 @@ export function SignInButtons() {
     <section className="signin-panel">
       <h2 className="signin-heading">Sign in</h2>
       <p className="signin-lede">
-        Muralist uses social sign-in so you don't have to manage another
+        Muraliste uses social sign-in so you don't have to manage another
         password.
       </p>
       <div className="signin-providers">

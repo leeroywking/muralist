@@ -3,9 +3,9 @@ export default function AboutPage() {
     <main className="page-shell">
       <section className="panel about-panel">
         <div className="section-head">
-          <h1>About Muralist</h1>
+          <h1>About Muraliste</h1>
           <p>
-            Muralist helps artists turn mural artwork into a practical paint list and rough brand-based paint estimate.
+            Muraliste helps artists turn mural artwork into a practical paint list and rough brand-based paint estimate.
           </p>
         </div>
 

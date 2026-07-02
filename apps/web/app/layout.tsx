@@ -4,7 +4,7 @@ import { HeaderSessionLink } from "./HeaderSessionLink";
 import "./styles.css";
 
 export const metadata: Metadata = {
-  title: "Muralist",
+  title: "Muraliste",
   description: "Palette reduction and rough paint planning for muralists."
 };
 
@@ -16,7 +16,7 @@ export default function RootLayout({
       <body>
         <header className="site-header">
           <Link className="brand-link" href="/">
-            Muralist
+            Muraliste
           </Link>
           <nav className="site-nav">
             <Link href="/">App</Link>

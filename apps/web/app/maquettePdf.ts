@@ -100,7 +100,7 @@ function drawHeader(
   topY: number
 ): number {
   const titleY = topY - 12;
-  page.drawText("Muralist Field Sheet", {
+  page.drawText("Muraliste Field Sheet", {
     x: MARGIN,
     y: titleY,
     size: 14,

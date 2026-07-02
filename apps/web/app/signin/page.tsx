@@ -1,8 +1,8 @@
 import { SignInButtons } from "../SignInButtons";
 
 export const metadata = {
-  title: "Sign in – Muralist",
-  description: "Sign in to Muralist to save palettes and access your projects."
+  title: "Sign in – Muraliste",
+  description: "Sign in to Muraliste to save palettes and access your projects."
 };
 
 // Server Component shell. All interactive bits live in `SignInButtons` so the
@@ -13,7 +13,7 @@ export default function SignInPage() {
     <main className="page-shell">
       <section className="panel signin-container">
         <div className="section-head">
-          <h1>Sign in to Muralist</h1>
+          <h1>Sign in to Muraliste</h1>
           <p>
             Sign in to save your mural projects, palettes, and brand settings
             across devices. Guest mode still works on the home page if you'd

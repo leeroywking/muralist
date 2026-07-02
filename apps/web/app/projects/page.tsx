@@ -1,9 +1,9 @@
 import { ProjectsDashboard } from "../ProjectsDashboard";
 
 export const metadata = {
-  title: "Projects – Muralist",
+  title: "Projects – Muraliste",
   description:
-    "Your saved Muralist projects: open, delete, or restore a trashed palette."
+    "Your saved Muraliste projects: open, delete, or restore a trashed palette."
 };
 
 // Server Component shell. All session + fetch logic lives in the client

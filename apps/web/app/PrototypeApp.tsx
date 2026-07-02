@@ -1239,7 +1239,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       <section className="hero hero-grid">
         <div>
           <p className="eyebrow">Paint Estimator</p>
-          <h1>Muralist</h1>
+          <h1>Muraliste</h1>
           <p className="lede">
             Upload mural artwork, capture the dominant paint colors, then merge chips into a practical
             field palette and estimate real can sizes.
@@ -2340,7 +2340,7 @@ function CloudSaveControls({
         disabled={!canSave || saving}
         onClick={onSaveNew}
         type="button"
-        title="Save this palette and artwork to your Muralist account."
+        title="Save this palette and artwork to your Muraliste account."
       >
         {saving ? "Saving…" : "Save to my account"}
       </button>
