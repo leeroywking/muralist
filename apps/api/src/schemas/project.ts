@@ -42,12 +42,14 @@ const mixRecipeSchema = z
 
 export const paletteJsonSchema = z
   .object({
+    schemaVersion: z.number().int().min(1).max(1000).optional(),
     colors: z.array(paletteColorSchema).min(1).max(200),
     originalColors: z.array(paletteColorSchema).max(200).optional(),
     merges: z.array(mergeOperationSchema).max(200).optional(),
     mixRecipes: z.array(mixRecipeSchema).max(200).optional(),
     finishOverrides: z.record(z.string().max(100), z.string().max(100)).optional(),
-    coatsOverrides: z.record(z.string().max(100), z.number().int().min(1).max(10)).optional()
+    coatsOverrides: z.record(z.string().max(100), z.number().int().min(1).max(10)).optional(),
+    transparentColorIds: z.array(z.string().min(1).max(100)).max(200).optional()
   })
   .refine(
     (palette) => {

@@ -114,6 +114,7 @@ type SavedMergePlan = {
   colorCoatsOverrides?: Record<string, number>;
   classifications?: Record<string, PaletteClassification>;
   mixRecipes?: MixRecipe[];
+  transparentColorIds?: string[];
 };
 
 type AutoCombineSensitivity = "conservative" | "balanced" | "aggressive" | "custom";
@@ -199,6 +200,9 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [classifications, setClassifications] = useState<Record<string, PaletteClassification>>({});
   const [mixRecipes, setMixRecipes] = useState<MixRecipe[]>([]);
+  // Colors flagged as bare-wall background: excluded from the paint estimate and
+  // rendered as show-through (alpha 0) in the flatten preview + maquette PDF.
+  const [transparentColorIds, setTransparentColorIds] = useState<Set<string>>(new Set());
   const [showProSettings, setShowProSettings] = useState(false);
   const [proSettings, setProSettings] = useState<ProSettings>(DEFAULT_PRO_SETTINGS);
 
@@ -245,8 +249,17 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     Number.isFinite(parsedWaste) &&
     parsedWaste >= 0;
 
+  // The paint plan (estimate, field sheet, PDF) is built from painted colors
+  // only — background/transparent colors are the bare wall and cost no paint.
+  // Coverage stays whole-image-relative, so dropping colors needs no
+  // renormalisation: each remaining color keeps its true area.
+  const paintablePalette = useMemo(
+    () => paletteColors.filter((color) => !transparentColorIds.has(color.id)),
+    [paletteColors, transparentColorIds]
+  );
+
   const adjustedCoverage = useMemo(() => {
-    const raw = paletteColors.map((color) => ({
+    const raw = paintablePalette.map((color) => ({
       id: color.id,
       coveragePercent: color.coveragePercent
     }));
@@ -259,10 +272,10 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       // the next auto-combine pass will re-derive.
       return raw;
     }
-  }, [paletteColors, mixRecipes]);
+  }, [paintablePalette, mixRecipes]);
 
   const containerPlan: ContainerPlan | null = useMemo(() => {
-    if (!estimateReady) {
+    if (!estimateReady || paintablePalette.length === 0) {
       return null;
     }
     return suggestContainersForColors(
@@ -291,6 +304,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     colorFinishOverrides,
     colorCoatsOverrides,
     adjustedCoverage,
+    paintablePalette,
     estimateReady
   ]);
 
@@ -309,7 +323,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     );
     const colorAreas = deriveColorAreaEstimates(
       wallArea,
-      paletteColors.map((color) => ({
+      paintablePalette.map((color) => ({
         id: color.id,
         coveragePercent: color.coveragePercent
       }))
@@ -332,7 +346,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       brandLabel: selectedBrand.display_name,
       retailer: selectedBrand.retailer,
       currency: containerPlan.currency,
-      colors: paletteColors.map((color) => {
+      colors: paintablePalette.map((color) => {
         const plan = containerPlan.perColor.find((entry) => entry.colorId === color.id);
         const finish = selectedBrand.finishes.find((entry) => entry.id === plan?.finishId);
         const classification: PaletteClassification = classifications[color.id] ?? "buy";
@@ -368,6 +382,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     fileName,
     artistNotes,
     paletteColors,
+    paintablePalette,
     classifications,
     mixRecipes,
     parsedCoats,
@@ -388,7 +403,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     }
     let cancelled = false;
     const compute = () => {
-      const flat = flattenImageToPalette(source, paletteColors);
+      const flat = flattenImageToPalette(source, paletteColors, transparentColorIds);
       if (!cancelled) {
         setFlattenedImageUrl(flat);
       }
@@ -407,7 +422,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [paletteColors]);
+  }, [paletteColors, transparentColorIds]);
 
   const planByColorId = useMemo(() => {
     const map = new Map<string, ColorContainerPlan>();
@@ -582,6 +597,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
         setMixRecipes(hydrated.mixRecipes);
         setColorFinishOverrides(hydrated.colorFinishOverrides);
         setColorCoatsOverrides(hydrated.colorCoatsOverrides);
+        setTransparentColorIds(new Set(hydrated.transparentColorIds));
         setPreviewUrl(hydrated.imageDataUrl);
         setFlattenedImageUrl(null);
         sourcePixelsRef.current = null;
@@ -676,6 +692,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setMergeKeeperId("");
     setColorFinishOverrides({});
     setColorCoatsOverrides({});
+    setTransparentColorIds(new Set());
     setFlattenedImageUrl(null);
     sourcePixelsRef.current = null;
     setSanitizedImageBase64(null);
@@ -832,6 +849,20 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     });
   }
 
+  // Flag/unflag a color as bare-wall background. Excluded from the paint plan
+  // and rendered show-through; persisted with the project (see buildEditorSnapshot).
+  function toggleTransparentColor(colorId: string) {
+    setTransparentColorIds((current) => {
+      const next = new Set(current);
+      if (next.has(colorId)) {
+        next.delete(colorId);
+      } else {
+        next.add(colorId);
+      }
+      return next;
+    });
+  }
+
   function mergeSelectedColors() {
     if (selectedColorIds.length < 2 || !mergeKeeperId) {
       return;
@@ -975,6 +1006,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setMergeKeeperId("");
     setColorFinishOverrides({});
     setColorCoatsOverrides({});
+    setTransparentColorIds(new Set());
     // Guest-only path: signed-in users keep the server authoritative and have no
     // local plan, so removeItem is a harmless no-op for them.
     setSavedMergePlan(null);
@@ -1014,6 +1046,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       setMergeKeeperId("");
       setColorFinishOverrides({});
       setColorCoatsOverrides({});
+      setTransparentColorIds(new Set());
       setSavedMergePlan(null);
       if (typeof window !== "undefined") {
         window.localStorage.removeItem(savedMergePlanKey);
@@ -1053,7 +1086,8 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       colorFinishOverrides,
       colorCoatsOverrides,
       classifications,
-      mixRecipes
+      mixRecipes,
+      transparentColorIds: Array.from(transparentColorIds)
     };
 
     window.localStorage.setItem(savedMergePlanKey, JSON.stringify(nextSavedPlan));
@@ -1067,7 +1101,11 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       classifications,
       mixRecipes,
       colorFinishOverrides,
-      colorCoatsOverrides
+      colorCoatsOverrides,
+      // Only serialise flags for colors that still exist in the palette.
+      transparentColorIds: paletteColors
+        .filter((color) => transparentColorIds.has(color.id))
+        .map((color) => color.id)
     };
   }
 
@@ -1190,6 +1228,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setColorCoatsOverrides(savedMergePlan.colorCoatsOverrides ?? {});
     setClassifications(savedMergePlan.classifications ?? {});
     setMixRecipes(savedMergePlan.mixRecipes ?? []);
+    setTransparentColorIds(new Set(savedMergePlan.transparentColorIds ?? []));
     setSelectedColorIds([]);
     setMergeKeeperId("");
     setSaveMessage("Saved merged choices restored.");
@@ -1580,10 +1619,11 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 const classification = classifications[color.id] ?? "buy";
                 const isMix = classification === "mix";
                 const recipe = isMix ? mixRecipes.find((entry) => entry.targetColorId === color.id) : undefined;
+                const isTransparent = transparentColorIds.has(color.id);
 
                 return (
                   <article
-                    className={`swatch-card ${isSelected ? "swatch-card-selected" : ""} ${isMix ? "swatch-card-mix" : ""}`}
+                    className={`swatch-card ${isSelected ? "swatch-card-selected" : ""} ${isMix ? "swatch-card-mix" : ""} ${isTransparent ? "swatch-card-transparent" : ""}`}
                     key={color.id}
                   >
                     <button
@@ -1606,32 +1646,47 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                       ) : (
                         <p>{color.pixelCount.toLocaleString()} sampled pixels in this working color.</p>
                       )}
-                      <label className="field field-inline swatch-finish">
-                        <span>Finish</span>
-                        <select
-                          value={effectiveFinishId}
-                          onChange={(event) => handleColorFinishChange(color.id, event.target.value)}
-                        >
-                          {selectedBrand.finishes.map((finish) => (
-                            <option key={finish.id} value={finish.id}>
-                              {finish.display_name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="field field-inline swatch-coats">
-                        <span>Coats</span>
-                        <input
-                          type="number"
-                          min="1"
-                          value={colorCoatsOverrides[color.id] ?? (Number.isFinite(parsedCoats) ? parsedCoats : 2)}
-                          onChange={(event) => handleColorCoatsChange(color.id, event.target.value)}
-                        />
-                      </label>
-                      <div className="estimate-row">
-                        <span>{selectedBrand.display_name}</span>
-                        <strong>{colorPlan ? formatContainerPackages(colorPlan) : "--"}</strong>
-                      </div>
+                      <button
+                        type="button"
+                        className={`background-toggle ${isTransparent ? "is-active" : ""}`}
+                        onClick={() => toggleTransparentColor(color.id)}
+                        aria-pressed={isTransparent}
+                        title="Bare wall: leave unpainted, exclude from the estimate, and show through in the preview."
+                      >
+                        {isTransparent ? "✓ Background — no paint" : "Mark as background"}
+                      </button>
+                      {isTransparent ? (
+                        <p className="background-note">Bare wall — excluded from the paint estimate.</p>
+                      ) : (
+                        <>
+                          <label className="field field-inline swatch-finish">
+                            <span>Finish</span>
+                            <select
+                              value={effectiveFinishId}
+                              onChange={(event) => handleColorFinishChange(color.id, event.target.value)}
+                            >
+                              {selectedBrand.finishes.map((finish) => (
+                                <option key={finish.id} value={finish.id}>
+                                  {finish.display_name}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="field field-inline swatch-coats">
+                            <span>Coats</span>
+                            <input
+                              type="number"
+                              min="1"
+                              value={colorCoatsOverrides[color.id] ?? (Number.isFinite(parsedCoats) ? parsedCoats : 2)}
+                              onChange={(event) => handleColorCoatsChange(color.id, event.target.value)}
+                            />
+                          </label>
+                          <div className="estimate-row">
+                            <span>{selectedBrand.display_name}</span>
+                            <strong>{colorPlan ? formatContainerPackages(colorPlan) : "--"}</strong>
+                          </div>
+                        </>
+                      )}
                     </div>
                   </article>
                 );
@@ -2086,7 +2141,8 @@ function formatPartialGridNotice(grid: GridSpec) {
 
 function flattenImageToPalette(
   source: { data: Uint8ClampedArray; width: number; height: number },
-  palette: PaletteColor[]
+  palette: PaletteColor[],
+  transparentColorIds: Set<string> = new Set()
 ): string | null {
   if (typeof document === "undefined" || palette.length === 0) return null;
   const out = new Uint8ClampedArray(source.data.length);
@@ -2116,7 +2172,13 @@ function flattenImageToPalette(
         bestIndex = p;
       }
     }
-    const rgb = palette[bestIndex]!.rgb;
+    const nearest = palette[bestIndex]!;
+    if (transparentColorIds.has(nearest.id)) {
+      // Bare wall: leave the pixel show-through so the artist sees unpainted area.
+      out[i + 3] = 0;
+      continue;
+    }
+    const rgb = nearest.rgb;
     out[i] = rgb[0];
     out[i + 1] = rgb[1];
     out[i + 2] = rgb[2];

@@ -60,12 +60,16 @@ export type MergeOperation = {
 };
 
 export type PaletteJson = {
+  /** Palette-JSON schema version. Absent on legacy documents → treat as 1. */
+  schemaVersion?: number;
   colors: PaletteColor[];
   originalColors?: PaletteColor[];
   merges?: MergeOperation[];
   mixRecipes?: unknown[];
   finishOverrides?: Record<string, string>;
   coatsOverrides?: Record<string, number>;
+  /** Ids of colors flagged as bare-wall background — excluded from paint. */
+  transparentColorIds?: string[];
 };
 
 export type ProjectMetadata = {

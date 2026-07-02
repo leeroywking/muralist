@@ -1149,6 +1149,39 @@ h1 {
   margin-right: 0.35rem;
 }
 
+/* ---- Background / transparent (bare-wall, no-paint) color --------------- */
+.background-toggle {
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  align-self: flex-start;
+  margin: 0.35rem 0 0.1rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid rgba(120, 120, 130, 0.45);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+}
+.background-toggle.is-active {
+  border-color: rgba(46, 129, 98, 0.55);
+  background: rgba(46, 129, 98, 0.12);
+  color: #1e5a42;
+}
+.background-note {
+  margin: 0.25rem 0 0.2rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+/* Checkerboard hint: the color is the bare wall, not a paint fill. */
+.swatch-card-transparent .swatch {
+  background-image:
+    linear-gradient(45deg, rgba(0, 0, 0, 0.12) 25%, transparent 25%, transparent 75%, rgba(0, 0, 0, 0.12) 75%),
+    linear-gradient(45deg, rgba(0, 0, 0, 0.12) 25%, transparent 25%, transparent 75%, rgba(0, 0, 0, 0.12) 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 6px 6px;
+  opacity: 0.85;
+}
+
 /* ---- Sign-in page ------------------------------------------------------- */
 .signin-container {
   max-width: 640px;

@@ -21,6 +21,7 @@ import {
 } from "./apiClient.js";
 import {
   DEFAULT_UPLOAD_LIMITS,
+  PALETTE_SCHEMA_VERSION,
   buildCreateProjectPayload,
   buildPaletteJson,
   getUploadLimits,
@@ -60,7 +61,8 @@ function makeSnapshot(partial: Partial<EditorSnapshot> = {}): EditorSnapshot {
     classifications: partial.classifications ?? {},
     mixRecipes: partial.mixRecipes ?? [],
     colorFinishOverrides: partial.colorFinishOverrides ?? {},
-    colorCoatsOverrides: partial.colorCoatsOverrides ?? {}
+    colorCoatsOverrides: partial.colorCoatsOverrides ?? {},
+    transparentColorIds: partial.transparentColorIds ?? []
   };
 }
 
@@ -104,6 +106,19 @@ test("buildPaletteJson omits empty optional sections", () => {
   assert.equal(palette.finishOverrides, undefined);
   assert.equal(palette.coatsOverrides, undefined);
   assert.equal(palette.originalColors, undefined);
+  assert.equal(palette.transparentColorIds, undefined);
+});
+
+test("buildPaletteJson stamps the current schema version", () => {
+  const palette = buildPaletteJson(makeSnapshot());
+  assert.equal(palette.schemaVersion, PALETTE_SCHEMA_VERSION);
+});
+
+test("buildPaletteJson serialises transparentColorIds when present", () => {
+  const palette = buildPaletteJson(makeSnapshot({ transparentColorIds: ["c2"] }));
+  assert.deepEqual(palette.transparentColorIds, ["c2"]);
+  // Still a valid payload for the backend schema.
+  assert.ok(paletteJsonSchema.safeParse(palette).success);
 });
 
 test("buildPaletteJson preserves merge-reversibility via originalColors", () => {
@@ -157,6 +172,12 @@ test("buildPaletteJson output passes the backend zod schema", () => {
     true,
     `schema rejected palette: ${result.success ? "" : JSON.stringify(result.error.format())}`
   );
+});
+
+test("paletteJsonSchema rejects a non-string transparentColorIds entry", () => {
+  const palette = buildPaletteJson(makeSnapshot());
+  const bad = { ...palette, transparentColorIds: [123] };
+  assert.equal(paletteJsonSchema.safeParse(bad).success, false);
 });
 
 // ---------------------------------------------------------------------------
@@ -287,8 +308,20 @@ test("hydrateFromProject maps backend fields onto editor state", () => {
   // Overrides copied by value.
   assert.deepEqual(state.colorFinishOverrides, { c1: "satin" });
   assert.deepEqual(state.colorCoatsOverrides, { c1: 2 });
+  // No background colors on a legacy fixture → empty set.
+  assert.deepEqual(state.transparentColorIds, []);
   // Image is wrapped as a data URL.
   assert.ok(state.imageDataUrl.startsWith("data:image/jpeg;base64,"));
+});
+
+test("transparentColorIds round-trips through buildPaletteJson → hydrateFromProject", () => {
+  const palette = buildPaletteJson(
+    makeSnapshot({ transparentColorIds: ["c2"] })
+  );
+  const state = hydrateFromProject(
+    makeProjectFixture({ palette: palette as ProjectFull["palette"] })
+  );
+  assert.deepEqual(state.transparentColorIds, ["c2"]);
 });
 
 test("hydrateFromProject handles a palette with no optional sections", () => {

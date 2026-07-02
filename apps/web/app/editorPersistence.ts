@@ -69,6 +69,11 @@ export type EditorPaletteColor = {
   coveragePercent: number;
 };
 
+// Current palette-JSON schema version. Stamped onto every write; documents
+// written before versioning existed have no field and are read as version 1.
+// Bump this only for a breaking shape change and branch read logic on it.
+export const PALETTE_SCHEMA_VERSION = 1;
+
 export type EditorSnapshot = {
   paletteColors: EditorPaletteColor[];
   originalPaletteColors?: EditorPaletteColor[];
@@ -76,6 +81,7 @@ export type EditorSnapshot = {
   mixRecipes: MixRecipe[];
   colorFinishOverrides: Record<string, string>;
   colorCoatsOverrides: Record<string, number>;
+  transparentColorIds: string[];
 };
 
 /**
@@ -120,6 +126,7 @@ export function toBackendPaletteColors(
  */
 export function buildPaletteJson(snapshot: EditorSnapshot): PaletteJson {
   const palette: PaletteJson = {
+    schemaVersion: PALETTE_SCHEMA_VERSION,
     colors: toBackendPaletteColors(
       snapshot.paletteColors,
       snapshot.classifications
@@ -144,6 +151,9 @@ export function buildPaletteJson(snapshot: EditorSnapshot): PaletteJson {
       coats[id] = rounded;
     }
     palette.coatsOverrides = coats;
+  }
+  if (snapshot.transparentColorIds.length > 0) {
+    palette.transparentColorIds = [...snapshot.transparentColorIds];
   }
   return palette;
 }
@@ -182,6 +192,7 @@ export type HydratedEditorState = {
   mixRecipes: MixRecipe[];
   colorFinishOverrides: Record<string, string>;
   colorCoatsOverrides: Record<string, number>;
+  transparentColorIds: string[];
   /** Base64-decoded data URL suitable for an <img src>. */
   imageDataUrl: string;
   version: number;
@@ -251,6 +262,9 @@ export function hydrateFromProject(project: ProjectFull): HydratedEditorState {
     mixRecipes,
     colorFinishOverrides: { ...(palette.finishOverrides ?? {}) },
     colorCoatsOverrides: { ...(palette.coatsOverrides ?? {}) },
+    transparentColorIds: Array.isArray(palette.transparentColorIds)
+      ? [...palette.transparentColorIds]
+      : [],
     imageDataUrl: `data:image/jpeg;base64,${project.sanitizedImage}`,
     version: project.version,
     projectId: project.id,
