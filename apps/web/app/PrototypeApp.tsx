@@ -978,6 +978,48 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setSaveMessage("Palette reset to the original image — all merges cleared.");
   }
 
+  // Full reset: re-derive the palette straight from the image's pixels
+  // (`sourcePixelsRef`), discarding every merge, color edit, and saved baseline.
+  // Unlike handleResetPalette — which restores whatever palette was *captured*
+  // into sourceAnalysis (for a loaded project that's the saved palette) — this
+  // recomputes the very-first analysis from the picture itself. Art + wall
+  // settings are untouched.
+  function handleFullReset() {
+    const source = sourcePixelsRef.current;
+    if (!source) {
+      setSaveMessage("No image loaded to re-analyze yet.");
+      return;
+    }
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(
+        "Full reset — rebuild the palette from the original image? This discards every merge and color edit. Your image and wall settings stay."
+      )
+    ) {
+      return;
+    }
+    try {
+      const fresh = analyzePixels(source.data, source.width, source.height);
+      setSourceAnalysis(fresh);
+      setPaletteColors(fresh.colors);
+      setClassifications({});
+      setMixRecipes([]);
+      setSelectedColorIds([]);
+      setMergeKeeperId("");
+      setColorFinishOverrides({});
+      setColorCoatsOverrides({});
+      setSavedMergePlan(null);
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem(savedMergePlanKey);
+      }
+      setSaveMessage(
+        `Full reset — rebuilt ${fresh.colors.length} colors from the original image.`
+      );
+    } catch (err) {
+      setSaveMessage(err instanceof Error ? err.message : "Couldn't re-analyze the image.");
+    }
+  }
+
   function saveMergedChoices() {
     if (typeof window === "undefined" || paletteColors.length === 0) {
       return;
@@ -1402,6 +1444,15 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 >
                   Reset to original colors
                 </button>
+                <button
+                  className="save-button full-reset-button"
+                  disabled={paletteColors.length === 0}
+                  onClick={handleFullReset}
+                  type="button"
+                  title="Rebuild the palette from scratch by re-analyzing the original image — discards every merge and color edit. Keeps your image and wall settings."
+                >
+                  Full reset
+                </button>
                 {isSignedIn === false ? (
                   <button
                     className="save-button"
@@ -1819,7 +1870,18 @@ function analyzeLoadedImage(image: HTMLImageElement, canvas: HTMLCanvasElement |
   context.drawImage(image, 0, 0, width, height);
 
   const imageData = context.getImageData(0, 0, width, height);
-  const sampled = samplePixels(imageData.data);
+  return analyzePixels(imageData.data, width, height);
+}
+
+// Cluster a raw RGBA pixel buffer into the original palette — the exact math
+// analyzeLoadedImage runs, but callable from cached pixels (sourcePixelsRef) so
+// "Full reset" can re-derive the very-first palette without decoding again.
+function analyzePixels(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number
+): AnalysisResult {
+  const sampled = samplePixels(data);
 
   if (!sampled.length) {
     throw new Error("No visible pixels were found in this image.");

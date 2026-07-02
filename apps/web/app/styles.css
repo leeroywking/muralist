@@ -849,11 +849,18 @@ h1 {
   color: #444;
 }
 
+.full-reset-button {
+  border: 1px solid rgba(176, 58, 46, 0.5);
+  background: rgba(176, 58, 46, 0.08);
+  color: #7a241b;
+}
+
 .merge-button:disabled,
 .save-button:disabled,
 .restore-button:disabled,
 .auto-combine-button:disabled,
-.reset-button:disabled {
+.reset-button:disabled,
+.full-reset-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
