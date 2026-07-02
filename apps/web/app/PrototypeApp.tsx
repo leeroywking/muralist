@@ -417,6 +417,19 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     return paletteColors.filter((color) => selectedColorIds.includes(color.id));
   }, [paletteColors, selectedColorIds]);
 
+  // Enable "Reset to original colors" only when there's something to undo:
+  // the palette diverges from the upload survey (merges only shrink the set),
+  // or any merge-derived/override/plan state is hanging around.
+  const canResetPalette =
+    !!sourceAnalysis &&
+    (paletteColors.length !== sourceAnalysis.colors.length ||
+      Object.keys(classifications).length > 0 ||
+      mixRecipes.length > 0 ||
+      Object.keys(colorFinishOverrides).length > 0 ||
+      Object.keys(colorCoatsOverrides).length > 0 ||
+      selectedColorIds.length > 0 ||
+      !!savedMergePlan);
+
   // Local-only persistence (savedMergePlan + proSettings) only runs while
   // the user is signed OUT. For signed-in users the server is the source of
   // truth — proSettings hydrate from /me below and save back via
@@ -932,6 +945,39 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     );
   }
 
+  // Restore the palette to the untouched survey captured at upload
+  // (`sourceAnalysis.colors`) — the image with nothing merged. Merges only ever
+  // reduce the color set, so the original ids are a superset and this reintroduces
+  // every color the analyzer found. "Full clean slate": drop all merge-derived
+  // state, per-color overrides, and the on-device merge plan.
+  function handleResetPalette() {
+    if (!sourceAnalysis) {
+      return;
+    }
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(
+        "Reset to the original image colors? This clears all merges and per-color finish/coats overrides."
+      )
+    ) {
+      return;
+    }
+    setPaletteColors(sourceAnalysis.colors);
+    setClassifications({});
+    setMixRecipes([]);
+    setSelectedColorIds([]);
+    setMergeKeeperId("");
+    setColorFinishOverrides({});
+    setColorCoatsOverrides({});
+    // Guest-only path: signed-in users keep the server authoritative and have no
+    // local plan, so removeItem is a harmless no-op for them.
+    setSavedMergePlan(null);
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(savedMergePlanKey);
+    }
+    setSaveMessage("Palette reset to the original image — all merges cleared.");
+  }
+
   function saveMergedChoices() {
     if (typeof window === "undefined" || paletteColors.length === 0) {
       return;
@@ -1346,6 +1392,15 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                   title="Classify the palette into colors to buy, colors to mix, and gradient members to absorb into their nearest neighbors."
                 >
                   Auto-combine similar colors
+                </button>
+                <button
+                  className="save-button reset-button"
+                  disabled={!canResetPalette}
+                  onClick={handleResetPalette}
+                  type="button"
+                  title="Undo all merges and return to the original image colors with nothing combined."
+                >
+                  Reset to original colors
                 </button>
                 {isSignedIn === false ? (
                   <button

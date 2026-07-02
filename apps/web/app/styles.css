@@ -843,10 +843,17 @@ h1 {
   color: #5a2a0b;
 }
 
+.reset-button {
+  border: 1px solid rgba(120, 120, 130, 0.45);
+  background: rgba(120, 120, 130, 0.08);
+  color: #444;
+}
+
 .merge-button:disabled,
 .save-button:disabled,
 .restore-button:disabled,
-.auto-combine-button:disabled {
+.auto-combine-button:disabled,
+.reset-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
