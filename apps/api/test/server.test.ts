@@ -29,7 +29,7 @@ test("brand catalog endpoint returns seeded brands", async () => {
   const payload = response.json();
 
   assert.equal(response.statusCode, 200);
-  assert.equal(payload.brands.length, 3);
+  assert.equal(payload.brands.length, 4);
 
   await app.close();
 });

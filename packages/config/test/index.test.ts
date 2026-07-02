@@ -10,7 +10,7 @@ test("paint brand catalog loads and validates", async () => {
   const catalog = await loadPaintBrandCatalog();
 
   assert.equal(catalog.version, 1);
-  assert.equal(catalog.brands.length, 3);
+  assert.equal(catalog.brands.length, 4);
   assert.equal(catalog.units.coverage, "sqft_per_gallon");
   assert.equal(catalog.units.price, "usd_per_unit");
 });

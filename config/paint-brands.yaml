@@ -93,6 +93,39 @@ brands:
         display_name: Semi-Gloss
         coverage_multiplier: 0.92
 
+  - id: benjamin_moore
+    display_name: Benjamin Moore
+    retailer: Benjamin Moore
+    coverage:
+      min: 400
+      default: 425
+      max: 450
+    default_coats: 2
+    confidence: rough_official_range
+    notes: Planning range based on Benjamin Moore's published interior coverage guidance. Product line selected for pricing + finishes is Regal Select Interior, sold through independent Benjamin Moore retailers.
+    sources:
+      - https://www.benjaminmoore.com/en-us/interior-exterior-paints-stains/regal-select-interior-paint
+      - https://www.benjaminmoore.com/en-us/paint-colors/color-samples
+    prices:
+      currency: USD
+      sample: 9.99
+      quart: 27.99
+      gallon: 66.99
+      as_of: "2026-07"
+    finishes:
+      - id: flat
+        display_name: Flat
+        coverage_multiplier: 1.00
+      - id: eggshell
+        display_name: Eggshell
+        coverage_multiplier: 0.98
+      - id: pearl
+        display_name: Pearl
+        coverage_multiplier: 0.95
+      - id: semi_gloss
+        display_name: Semi-Gloss
+        coverage_multiplier: 0.92
+
   - id: behr
     display_name: Behr
     retailer: Home Depot
