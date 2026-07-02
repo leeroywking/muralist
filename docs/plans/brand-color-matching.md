@@ -91,6 +91,40 @@ commercial terms. **Legal review advisable before shipping** any brand data
 commercially — but consuming a licensed paid API (with commercial-use terms
 confirmed) is the lowest-risk route.
 
+## Update 2026-07-02 — verified against the live API: requires ENTERPRISE tier
+
+Tested the real Encycolorpedia API with the account API key (`ENCYCOLORPEDIA_API_KEY`
+in root `.env`). Their website blocks crawlers, but the API + OpenAPI spec are
+reachable. Findings supersede the "likely Pro" guess above:
+
+- **Base:** `api.encycolorpedia.com`; OpenAPI spec at `/v1/spec.json`.
+- **Auth:** Bearer. Exchange the API key for a session token via
+  `POST /v1/auth/token` (works on our key), then `Authorization: Bearer {token}`.
+- **The endpoint we need:** `POST /v1/paints?brand={slug}&max_delta_e=&limit=`,
+  body = array of hex strings, response = `{ "<hex>": Match[] }` where
+  `Match = Paint{id:hex, brand, name} + delta_e`. Batched, exactly our design.
+  Per-brand variant: `GET /v1/paints/{brand}/search?q={hex}`.
+- **Tier gate (the spec tags each endpoint with its tier):**
+  - `POST /v1/paints` and `GET /v1/paints/{brand}/search` → **Enterprise**.
+  - `GET /v1/paints` (brand list) + `GET /v1/paints/{brand}/profile` → Pro.
+  - Our current key is **User** tier: only generic color systems
+    (`/v1/colors/{html,brands,munsell,websafe}`, `/v1/match` against a
+    self-supplied corpus) — **no paint fan-decks**. All `/v1/paints/*` calls
+    return HTTP 403 on this key (confirmed from both curl and a real headless
+    Chrome, so it is authorization, not a Cloudflare/bot block).
+- **So the correct requirement is ENTERPRISE, not Pro.** `/v1/colors/brands`
+  (corporate brand-identity colors) and `/v1/colors/html` (CSS named colors) are
+  User-tier but the wrong dataset — not purchasable paint.
+- **Open item:** the `Paint` object is `{id:hex, brand, name}` — no explicit
+  product-code field. Whether the orderable code (e.g. "HC-154") lives inside
+  `name` is unverified (blocked by the 403).
+
+**Revised decision path when resumed:** get an **Enterprise quote** from
+Encycolorpedia first. If affordable → upgrade, then build against
+`POST /v1/paints` (contract mapped, ready). If the Enterprise price is
+prohibitive → pivot to the local-data route (SW official spreadsheet + BM swatch
+files + colornerd), accepting the Valspar gap and Behr ToS risk. Still **SHELVED**.
+
 ## Research provenance
 
 Deep-research workflow run 2026-07-02 (101 agents, 19 sources, 25 claims verified).
