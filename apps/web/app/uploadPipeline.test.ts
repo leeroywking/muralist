@@ -167,6 +167,44 @@ test("verifyMagicBytes rejects a truncated header (2 bytes)", async () => {
   );
 });
 
+const SVG_BYTES = new TextEncoder().encode(
+  '<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#ff0000"/></svg>'
+);
+
+test("verifyMagicBytes accepts SVG and reports the svg kind", async () => {
+  const blob = new NodeBlob([SVG_BYTES]) as unknown as Blob;
+  assert.equal(await verifyMagicBytes(blob), "svg");
+});
+
+test("verifyMagicBytes reports raster kind for JPEG", async () => {
+  const blob = new NodeBlob([JPEG_HEADER]) as unknown as Blob;
+  assert.equal(await verifyMagicBytes(blob), "raster");
+});
+
+test("verifyMagicBytes rejects non-SVG XML", async () => {
+  const xml = new TextEncoder().encode('<?xml version="1.0"?>\n<note><to>x</to></note>');
+  const blob = new NodeBlob([xml]) as unknown as Blob;
+  await assert.rejects(
+    () => verifyMagicBytes(blob),
+    (err: unknown) =>
+      err instanceof UploadSanitizationError &&
+      err.reason === "MAGIC_BYTES_MISMATCH"
+  );
+});
+
+test("sanitizeUpload accepts .svg past the extension + magic-byte gates", async () => {
+  // Passes extension + magic-byte checks; the SVG rasterize path needs a DOM,
+  // which node:test lacks, so it surfaces DECODE_FAILED — confirming the gates
+  // were cleared and the svg branch was taken.
+  const file = makeFile(SVG_BYTES, "logo.svg", "image/svg+xml");
+  await assert.rejects(
+    () => sanitizeUpload(file, limits),
+    (err: unknown) =>
+      err instanceof UploadSanitizationError &&
+      err.reason === "DECODE_FAILED"
+  );
+});
+
 test("blobToBase64 round-trips through FileReader when available", async (t) => {
   // `FileReader` is not a Node built-in. Skip unless the runtime provides it
   // (jsdom, browser). The production consumer always runs in the browser.

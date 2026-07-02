@@ -36,7 +36,12 @@ export class UploadSanitizationError extends Error {
   }
 }
 
-const ALLOWED_EXTENSIONS = [".jpg", ".jpeg", ".webp", ".png"] as const;
+const ALLOWED_EXTENSIONS = [".jpg", ".jpeg", ".webp", ".png", ".svg"] as const;
+
+// Detected input family. SVG is vector/XML and takes a different decode path
+// (an isolated <img> rasterize) than the raster formats; both re-encode to the
+// same JPEG artifacts, so nothing downstream ever sees the original bytes.
+export type DetectedImageKind = "raster" | "svg";
 
 function hasAllowedExtension(name: string): boolean {
   const lower = name.toLowerCase();
@@ -82,20 +87,28 @@ function matchesPngMagic(bytes: Uint8Array): boolean {
   );
 }
 
-export async function verifyMagicBytes(file: Blob): Promise<void> {
-  const head = file.slice(0, 16);
+// SVG is XML/text, not a binary magic number. Look for the root <svg tag in
+// the head, tolerating a leading BOM, XML declaration, DOCTYPE, or comments.
+function matchesSvgMagic(bytes: Uint8Array): boolean {
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes).toLowerCase();
+  return text.includes("<svg");
+}
+
+export async function verifyMagicBytes(file: Blob): Promise<DetectedImageKind> {
+  // Read enough to clear an XML declaration / DOCTYPE / comment before <svg>.
+  const head = file.slice(0, 1024);
   const buffer = await head.arrayBuffer();
   const bytes = new Uint8Array(buffer);
-  if (
-    !matchesJpegMagic(bytes) &&
-    !matchesWebpMagic(bytes) &&
-    !matchesPngMagic(bytes)
-  ) {
-    throw new UploadSanitizationError(
-      "MAGIC_BYTES_MISMATCH",
-      "File contents do not match JPEG, WebP, or PNG magic bytes."
-    );
+  if (matchesJpegMagic(bytes) || matchesWebpMagic(bytes) || matchesPngMagic(bytes)) {
+    return "raster";
   }
+  if (matchesSvgMagic(bytes)) {
+    return "svg";
+  }
+  throw new UploadSanitizationError(
+    "MAGIC_BYTES_MISMATCH",
+    "File contents do not match JPEG, WebP, PNG, or SVG magic bytes."
+  );
 }
 
 type OffscreenCanvasCtor = new (
@@ -131,6 +144,69 @@ function computeTargetDimensions(
   };
 }
 
+function loadImageElement(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("SVG could not be decoded as an image."));
+    image.src = url;
+  });
+}
+
+/**
+ * Rasterize an SVG to an ImageBitmap. `createImageBitmap` is unreliable on SVG
+ * (sizeless documents, cross-browser gaps), so load it as an isolated `<img>` —
+ * which runs SVG in secure-static mode (no scripts, no external subresource
+ * loads, so the canvas is never tainted) — then draw it onto a canvas scaled so
+ * the long edge reaches `longEdge` for a crisp raster of the vector. Output is
+ * a raster bitmap, so any SVG payload is neutralized before it reaches the
+ * shared JPEG encoder or the server.
+ */
+async function rasterizeSvgToBitmap(file: Blob, longEdge: number): Promise<ImageBitmap> {
+  if (typeof document === "undefined") {
+    throw new UploadSanitizationError(
+      "DECODE_FAILED",
+      "SVG rasterization requires a DOM."
+    );
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const image = await loadImageElement(url);
+    // Chrome gives a sizeless SVG-in-<img> a 300×150 intrinsic box; use that
+    // aspect and scale the vector up so the long edge ≈ longEdge.
+    let width = image.naturalWidth || 300;
+    let height = image.naturalHeight || 150;
+    const scale = longEdge / Math.max(width, height);
+    if (scale > 1) {
+      width = Math.max(1, Math.round(width * scale));
+      height = Math.max(1, Math.round(height * scale));
+    }
+    const OffscreenCanvasCtor = getOffscreenCanvasCtor();
+    const canvas = new OffscreenCanvasCtor(width, height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new UploadSanitizationError(
+        "OFFSCREEN_CANVAS_UNAVAILABLE",
+        "Could not acquire a 2D context to rasterize the SVG."
+      );
+    }
+    // SVGs are commonly transparent; JPEG has no alpha, so matte to white first
+    // to avoid a black background bleeding into the palette.
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(image, 0, 0, width, height);
+    return await createImageBitmap(canvas);
+  } catch (cause) {
+    if (cause instanceof UploadSanitizationError) throw cause;
+    throw new UploadSanitizationError(
+      "DECODE_FAILED",
+      `SVG rasterization failed: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 async function encodeArtifact(
   bitmap: ImageBitmap,
   longEdge: number,
@@ -161,9 +237,9 @@ async function encodeArtifact(
  * Sanitizes a user-supplied image file for persistence.
  *
  * Pipeline:
- *   1. Extension allowlist (.jpg, .jpeg, .webp).
- *   2. Magic-byte check on the first 16 bytes.
- *   3. `createImageBitmap` decode.
+ *   1. Extension allowlist (.jpg, .jpeg, .webp, .png, .svg).
+ *   2. Magic-byte check (SVG detected by its <svg> root tag).
+ *   3. Decode: `createImageBitmap` for raster, isolated <img> rasterize for SVG.
  *   4. Draw + JPEG re-encode at `limits.sanitizedImage.longEdge`.
  *   5. Second pass for `limits.thumbnail.longEdge`.
  *   6. Verify both blobs are under their configured byte caps.
@@ -181,18 +257,22 @@ export async function sanitizeUpload(
     );
   }
 
-  await verifyMagicBytes(file);
+  const kind = await verifyMagicBytes(file);
 
   let bitmap: ImageBitmap;
-  try {
-    bitmap = await createImageBitmap(file);
-  } catch (cause) {
-    throw new UploadSanitizationError(
-      "DECODE_FAILED",
-      `createImageBitmap failed: ${
-        cause instanceof Error ? cause.message : String(cause)
-      }`
-    );
+  if (kind === "svg") {
+    bitmap = await rasterizeSvgToBitmap(file, limits.sanitizedImage.longEdge);
+  } else {
+    try {
+      bitmap = await createImageBitmap(file);
+    } catch (cause) {
+      throw new UploadSanitizationError(
+        "DECODE_FAILED",
+        `createImageBitmap failed: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`
+      );
+    }
   }
 
   try {
