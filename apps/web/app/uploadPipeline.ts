@@ -9,6 +9,13 @@
 //
 // This file is UI-skeleton per §1 step 30: not yet wired into
 // PrototypeApp.tsx. The future UI round consumes it.
+//
+// Browser-independent analysis (2026-10-12): the sanitized + thumbnail
+// artifacts produced here are persistence/display only. No palette survey,
+// coverage or reduced-preview math reads these canvases — analysis decodes the
+// original file's bytes itself (imageAnalysis.ts). The canvases below still ask
+// for an explicit sRGB context and default color-space conversion so the
+// stored/displayed artifact is in the same space as the analysis.
 
 import type { UploadLimits } from "@muralist/config";
 
@@ -162,7 +169,7 @@ function loadImageElement(url: string): Promise<HTMLImageElement> {
  * a raster bitmap, so any SVG payload is neutralized before it reaches the
  * shared JPEG encoder or the server.
  */
-async function rasterizeSvgToBitmap(file: Blob, longEdge: number): Promise<ImageBitmap> {
+export async function rasterizeSvgToBitmap(file: Blob, longEdge: number): Promise<ImageBitmap> {
   if (typeof document === "undefined") {
     throw new UploadSanitizationError(
       "DECODE_FAILED",
@@ -183,7 +190,7 @@ async function rasterizeSvgToBitmap(file: Blob, longEdge: number): Promise<Image
     }
     const OffscreenCanvasCtor = getOffscreenCanvasCtor();
     const canvas = new OffscreenCanvasCtor(width, height);
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { colorSpace: "srgb" });
     if (!ctx) {
       throw new UploadSanitizationError(
         "OFFSCREEN_CANVAS_UNAVAILABLE",
@@ -219,7 +226,7 @@ async function encodeArtifact(
     longEdge
   );
   const canvas = new OffscreenCanvasCtor(width, height);
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d", { colorSpace: "srgb" });
   if (!ctx) {
     throw new UploadSanitizationError(
       "OFFSCREEN_CANVAS_UNAVAILABLE",
@@ -264,7 +271,7 @@ export async function sanitizeUpload(
     bitmap = await rasterizeSvgToBitmap(file, limits.sanitizedImage.longEdge);
   } else {
     try {
-      bitmap = await createImageBitmap(file);
+      bitmap = await createImageBitmap(file, { colorSpaceConversion: "default" });
     } catch (cause) {
       throw new UploadSanitizationError(
         "DECODE_FAILED",
