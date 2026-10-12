@@ -126,16 +126,56 @@ type ProSettings = {
   rememberOnDevice: boolean;
 };
 
-// Calibrated against the 12-per-channel quantization applied in
-// analyzeLoadedImage. The minimum inter-cluster Euclidean distance is
-// sqrt(3) * 12 ≈ 20.8, so any threshold near that is effectively inert.
-// Presets sit above the quantization floor to give meaningful behavior on
-// real captured palettes.
+// Residual thresholds in OKLab distance (classifyPaletteColors measures mix
+// fit and near-duplicate merging perceptually; ~0.02 is a just-noticeable
+// difference, black-to-white is 1.0). Calibration (2026-10-12): the old RGB
+// presets 24 / 36 / 54 map to roughly 0.045 / 0.067 / 0.10 at the median
+// OKLab-per-RGB-unit ratio of real palette neighbor pairs, but the
+// coverage-ordered classifier collapses more than the old one did at the
+// same tolerance, so the presets sit lower. Swept over the analyzer palettes
+// of the feedback and docs/example_art images, 0.02 / 0.04 / 0.07 keep the
+// three presets clearly distinct (octopus 15 / 10 / 7 buy colors, teal boats
+// 17 / 11 / 8, sunset path 8 / 5 / 4), and 0.07 still sits below the ~0.086
+// it would take to call light teal a white + black grey.
 const SENSITIVITY_PRESETS: Record<Exclude<AutoCombineSensitivity, "custom">, number> = {
-  conservative: 24,
-  balanced: 36,
-  aggressive: 54
+  conservative: 0.02,
+  balanced: 0.04,
+  aggressive: 0.07
 };
+
+// Range accepted for a custom residual threshold. Anything outside it —
+// notably a pre-OKLab RGB-unit value (1-100) still saved on a device or an
+// account — is replaced with the balanced preset on load.
+const CUSTOM_RESIDUAL_MIN = 0.005;
+const CUSTOM_RESIDUAL_MAX = 0.15;
+
+function normalizeProSettings(settings: ProSettings): ProSettings {
+  if (settings.autoCombineSensitivity !== "custom") {
+    const preset = SENSITIVITY_PRESETS[settings.autoCombineSensitivity];
+    if (preset === undefined) {
+      return {
+        ...settings,
+        autoCombineSensitivity: DEFAULT_PRO_SETTINGS.autoCombineSensitivity,
+        residualThreshold: DEFAULT_PRO_SETTINGS.residualThreshold
+      };
+    }
+    return { ...settings, residualThreshold: preset };
+  }
+  const value = settings.residualThreshold;
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < CUSTOM_RESIDUAL_MIN ||
+    value > CUSTOM_RESIDUAL_MAX
+  ) {
+    return {
+      ...settings,
+      autoCombineSensitivity: DEFAULT_PRO_SETTINGS.autoCombineSensitivity,
+      residualThreshold: DEFAULT_PRO_SETTINGS.residualThreshold
+    };
+  }
+  return settings;
+}
 
 const DEFAULT_PRO_SETTINGS: ProSettings = {
   autoCombineSensitivity: "balanced",
@@ -150,8 +190,8 @@ const maxSamplePixels = 22000;
 // Buckets closer than this Euclidean RGB distance fold together; anything more
 // distinct is kept regardless of how little of the image it covers — so small,
 // vivid regions (a flower's yellow center) survive instead of being cut by a
-// top-N popularity slice. 24 sits just above the /12 quantization floor and
-// matches the "conservative" auto-combine units.
+// top-N popularity slice. 24 sits just above the /12 quantization floor.
+// (Auto-combine thresholds are OKLab distances, not these RGB units.)
 const minColorDistance = 24;
 const savedMergePlanKey = "muralist.saved-merge-plan";
 const proSettingsKey = "muralist.pro-settings";
@@ -479,7 +519,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     if (!saved) return;
     try {
       const parsed = JSON.parse(saved) as Partial<ProSettings>;
-      setProSettings({ ...DEFAULT_PRO_SETTINGS, ...parsed });
+      setProSettings(normalizeProSettings({ ...DEFAULT_PRO_SETTINGS, ...parsed }));
     } catch {
       window.localStorage.removeItem(proSettingsKey);
     }
@@ -527,11 +567,13 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
         // saved yet (e.g. rememberOnDevice, which is device-only) keeps its
         // default instead of going undefined.
         proSettingsSkipNextPushRef.current = true;
-        setProSettings((current) => ({
-          ...DEFAULT_PRO_SETTINGS,
-          ...current,
-          ...(me.proSettings ?? {})
-        }));
+        setProSettings((current) =>
+          normalizeProSettings({
+            ...DEFAULT_PRO_SETTINGS,
+            ...current,
+            ...(me.proSettings ?? {})
+          })
+        );
         proSettingsHydratedRef.current = true;
       })
       .catch((err) => {
@@ -2379,9 +2421,19 @@ function ProSettingsPanel({
     onSettingsChange({ ...settings, mixCoveragePercent: parsed });
   }
 
+  // The custom field edits a draft string so partial decimals ("0", "0.0")
+  // can be typed on the way to e.g. 0.03; only in-range values are committed.
+  const [residualDraft, setResidualDraft] = useState(String(settings.residualThreshold));
+  useEffect(() => {
+    setResidualDraft((current) =>
+      Number(current) === settings.residualThreshold ? current : String(settings.residualThreshold)
+    );
+  }, [settings.residualThreshold]);
+
   function setResidual(nextRaw: string) {
+    setResidualDraft(nextRaw);
     const parsed = Number(nextRaw);
-    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    if (!Number.isFinite(parsed) || parsed < CUSTOM_RESIDUAL_MIN || parsed > CUSTOM_RESIDUAL_MAX) return;
     onSettingsChange({
       ...settings,
       autoCombineSensitivity: "custom",
@@ -2437,13 +2489,15 @@ function ProSettingsPanel({
 
           {settings.autoCombineSensitivity === "custom" ? (
             <label className="field pro-settings-custom">
-              <span>Residual threshold (0-100, RGB units)</span>
+              <span>
+                Residual threshold ({CUSTOM_RESIDUAL_MIN}-{CUSTOM_RESIDUAL_MAX}, OKLab distance; about 0.02 is a just-noticeable difference)
+              </span>
               <input
                 type="number"
-                min="1"
-                max="100"
-                step="1"
-                value={settings.residualThreshold}
+                min={CUSTOM_RESIDUAL_MIN}
+                max={CUSTOM_RESIDUAL_MAX}
+                step="0.005"
+                value={residualDraft}
                 onChange={(event) => setResidual(event.target.value)}
               />
             </label>
