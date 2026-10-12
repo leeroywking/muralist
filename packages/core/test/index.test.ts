@@ -12,6 +12,7 @@ import {
   deriveGridSpec,
   estimatePaintRequirement,
   getAuthCapabilities,
+  rgbToOklab,
   suggestContainersForColors
 } from "../src/index.js";
 import type { ClassifyPaletteInput } from "../src/index.js";
@@ -449,7 +450,7 @@ test("classifyPaletteColors collapses an even red-blue gradient to its two endpo
   }
 
   const classifications = classifyPaletteColors(colors, {
-    residualThreshold: 18,
+    residualThreshold: 0.04,
     mixCoveragePercent: 50
   });
 
@@ -472,9 +473,13 @@ test("classifyPaletteColors keeps a dominant mid-gradient color as a mix with a 
     { id: "purple", rgb: [128, 0, 128], pixelCount: 40 }
   ];
 
+  // Purple's 40% would make it a dominant (always-buy) color under the
+  // default 15% cutoff. This test is about the mix recipe itself, so the
+  // dominant cutoff is raised above every color's coverage.
   const classifications = classifyPaletteColors(colors, {
-    residualThreshold: 18,
-    mixCoveragePercent: 5
+    residualThreshold: 0.04,
+    mixCoveragePercent: 5,
+    dominantCoveragePercent: 50
   });
 
   const classByMap = new Map(classifications.map((entry) => [entry.id, entry]));
@@ -497,7 +502,7 @@ test("classifyPaletteColors keeps three independent primaries all as buy", () =>
       { id: "green", rgb: [20, 220, 20], pixelCount: 100 },
       { id: "blue", rgb: [20, 20, 220], pixelCount: 100 }
     ],
-    { residualThreshold: 18, mixCoveragePercent: 5 }
+    { residualThreshold: 0.04, mixCoveragePercent: 5 }
   );
 
   assert.equal(classifications.filter((entry) => entry.classification === "buy").length, 3);
@@ -510,7 +515,7 @@ test("classifyPaletteColors keeps a lone off-line accent as buy", () => {
       { id: "blue", rgb: [20, 20, 220], pixelCount: 500 },
       { id: "accent", rgb: [250, 180, 30], pixelCount: 5 }
     ],
-    { residualThreshold: 18, mixCoveragePercent: 5 }
+    { residualThreshold: 0.04, mixCoveragePercent: 5 }
   );
 
   const accent = classifications.find((entry) => entry.id === "accent");
@@ -533,7 +538,7 @@ test("classifyPaletteColors resolves transitive absorb chains across dedup and g
     { id: "mid", rgb: [125, 40, 125], pixelCount: 8 }
   ];
   const classifications = classifyPaletteColors(colors, {
-    residualThreshold: 28,
+    residualThreshold: 0.05,
     mixCoveragePercent: 10
   });
   // Every absorb must point at a buy so applyClassification can fold safely.
@@ -562,7 +567,7 @@ test("classifyPaletteColors deduplicates near-neighbors even when no mixing line
     { id: "outlier", rgb: [40, 200, 40], pixelCount: 60 }
   ];
   const classifications = classifyPaletteColors(colors, {
-    residualThreshold: 30,
+    residualThreshold: 0.05,
     mixCoveragePercent: 5
   });
   const classByMap = new Map(classifications.map((entry) => [entry.id, entry]));
@@ -584,7 +589,7 @@ test("classifyPaletteColors with fewer than three colors marks every entry as bu
       { id: "a", rgb: [0, 0, 0], pixelCount: 50 },
       { id: "b", rgb: [255, 255, 255], pixelCount: 50 }
     ],
-    { residualThreshold: 18, mixCoveragePercent: 5 }
+    { residualThreshold: 0.04, mixCoveragePercent: 5 }
   );
 
   assert.deepEqual(
@@ -606,6 +611,233 @@ test("classifyPaletteColors rejects invalid options", () => {
     () => classifyPaletteColors(colors, { residualThreshold: 10, mixCoveragePercent: -1 }),
     /Mix coverage percent must be zero or greater/
   );
+});
+
+// The web app's Conservative / Balanced / Aggressive presets (OKLab units),
+// mirrored from SENSITIVITY_PRESETS in apps/web/app/PrototypeApp.tsx.
+const OKLAB_PRESETS = [0.02, 0.04, 0.07];
+
+function hexToRgb(hex: string): [number, number, number] {
+  return [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16)) as [
+    number,
+    number,
+    number
+  ];
+}
+
+function paletteFromHexCoverage(entries: [string, number][]): ClassifyPaletteInput[] {
+  return entries.map(([hex, coverage]) => ({
+    id: hex,
+    rgb: hexToRgb(hex),
+    pixelCount: Math.round(coverage * 10)
+  }));
+}
+
+function assertCoherent(classifications: ReturnType<typeof classifyPaletteColors>) {
+  const buyIds = new Set(
+    classifications.filter((entry) => entry.classification === "buy").map((entry) => entry.id)
+  );
+  for (const entry of classifications) {
+    if (entry.classification === "mix") {
+      for (const component of entry.recipe!.components) {
+        assert.ok(buyIds.has(component.colorId), `${entry.id} mixes from non-buy ${component.colorId}`);
+      }
+    }
+    if (entry.classification === "absorb") {
+      assert.ok(
+        entry.absorbedIntoId && buyIds.has(entry.absorbedIntoId),
+        `${entry.id} absorbs into non-buy ${entry.absorbedIntoId}`
+      );
+    }
+  }
+}
+
+test("rgbToOklab maps white and black to the ends of the lightness axis", () => {
+  const white = rgbToOklab([255, 255, 255]);
+  const black = rgbToOklab([0, 0, 0]);
+  assert.ok(Math.abs(white[0] - 1) < 1e-3 && Math.abs(white[1]) < 1e-3 && Math.abs(white[2]) < 1e-3);
+  assert.ok(Math.abs(black[0]) < 1e-9 && Math.abs(black[1]) < 1e-9 && Math.abs(black[2]) < 1e-9);
+});
+
+test("classifyPaletteColors never makes the feedback teal palette's teal or purple from white + black", () => {
+  // "Mixing Issues 9/16/26" palette: light teal came back as 74% white + 26%
+  // near-black and the purple as white + near-black.
+  const colors = paletteFromHexCoverage([
+    ["#FFFFFF", 50.7],
+    ["#92D8D7", 21.4],
+    ["#038D8C", 8.9],
+    ["#390E5D", 6.9],
+    ["#FAD678", 6.0],
+    ["#020F1A", 3.3],
+    ["#3BB5B2", 2.7],
+    ["#C1A76C", 0.1]
+  ]);
+  const whiteOrBlack = new Set(["#FFFFFF", "#020F1A"]);
+  for (const residualThreshold of OKLAB_PRESETS) {
+    for (const mixCoveragePercent of [0, 5]) {
+      // 100 disables the dominant-color rule so the mix fit itself is tested.
+      for (const dominantCoveragePercent of [15, 100]) {
+        const classifications = classifyPaletteColors(colors, {
+          residualThreshold,
+          mixCoveragePercent,
+          dominantCoveragePercent
+        });
+        const byId = new Map(classifications.map((entry) => [entry.id, entry]));
+        const label = `threshold ${residualThreshold}, mix ${mixCoveragePercent}%, dominant ${dominantCoveragePercent}%`;
+        for (const id of ["#92D8D7", "#390E5D"]) {
+          const entry = byId.get(id)!;
+          if (entry.classification === "mix") {
+            const partners = entry.recipe!.components.map((component) => component.colorId);
+            assert.ok(
+              !partners.every((partner) => whiteOrBlack.has(partner)),
+              `${id} is a white/black mix at ${label}`
+            );
+          }
+        }
+        // Under the default dominant cutoff the 21% light teal is a buy.
+        if (dominantCoveragePercent === 15) {
+          assert.equal(byId.get("#92D8D7")?.classification, "buy", label);
+        }
+        assertCoherent(classifications);
+      }
+    }
+  }
+});
+
+test("classifyPaletteColors never mixes or absorbs a dominant color", () => {
+  // "mid" is the exact sRGB midpoint of red and blue and covers 20%, so it
+  // would be a perfect mix. "pinkish" sits a hair from red, so it would be a
+  // near-duplicate absorb. Both cover >= 15% and must stay buy.
+  const colors: ClassifyPaletteInput[] = [
+    { id: "red", rgb: [220, 20, 20], pixelCount: 300 },
+    { id: "blue", rgb: [20, 20, 220], pixelCount: 300 },
+    { id: "mid", rgb: [120, 20, 120], pixelCount: 200 },
+    { id: "pinkish", rgb: [222, 22, 24], pixelCount: 200 }
+  ];
+  for (const residualThreshold of OKLAB_PRESETS) {
+    const classifications = classifyPaletteColors(colors, {
+      residualThreshold,
+      mixCoveragePercent: 5
+    });
+    for (const entry of classifications) {
+      assert.equal(entry.classification, "buy", `${entry.id} at ${residualThreshold}`);
+    }
+  }
+
+  // Lowering the cutoff below their coverage is what lets them collapse.
+  const relaxed = classifyPaletteColors(colors, {
+    residualThreshold: 0.04,
+    mixCoveragePercent: 5,
+    dominantCoveragePercent: 50
+  });
+  const relaxedById = new Map(relaxed.map((entry) => [entry.id, entry]));
+  assert.equal(relaxedById.get("mid")?.classification, "mix");
+  assert.equal(relaxedById.get("pinkish")?.classification, "absorb");
+});
+
+test("classifyPaletteColors still detects synthetic sRGB gradients at every preset", () => {
+  // Rows from feedback/ColorMixSamples(Sheet1).csv: 100/0, 80/20, 60/40,
+  // 40/60, 20/80, 0/100 sRGB blends of two colors.
+  const rows: string[][] = [
+    ["#E417A5", "#BC1AA6", "#941DA6", "#6C1FA7", "#4422A7", "#1C25A8"],
+    ["#F27032", "#F58D5B", "#F7A984", "#FAC6AD", "#FCE2D6", "#FFFFFF"],
+    ["#DF0D0D", "#BF2D31", "#9F4D54", "#7F6E78", "#5F8E9B", "#3FAEBF"]
+  ];
+  for (const row of rows) {
+    const colors = paletteFromHexCoverage(
+      row.map((hex, index) => [hex, index === 0 || index === row.length - 1 ? 30 : 10])
+    );
+    for (const residualThreshold of OKLAB_PRESETS) {
+      const classifications = classifyPaletteColors(colors, {
+        residualThreshold,
+        mixCoveragePercent: 5
+      });
+      const byId = new Map(classifications.map((entry) => [entry.id, entry]));
+      const first = row[0]!;
+      const last = row[row.length - 1]!;
+      assert.equal(byId.get(first)?.classification, "buy");
+      assert.equal(byId.get(last)?.classification, "buy");
+      row.slice(1, -1).forEach((hex, index) => {
+        const entry = byId.get(hex)!;
+        // Looser presets may fold a step next to an endpoint in as a near
+        // duplicate; that still collapses the gradient onto its endpoints.
+        // At the conservative preset every step must keep its recipe.
+        if (entry.classification === "absorb" && residualThreshold > OKLAB_PRESETS[0]!) {
+          assert.ok([first, last].includes(entry.absorbedIntoId!), `${hex} absorbs into an endpoint`);
+          return;
+        }
+        assert.equal(entry.classification, "mix", `${hex} at ${residualThreshold}`);
+        const fractions = Object.fromEntries(
+          entry.recipe!.components.map((component) => [component.colorId, component.fraction])
+        );
+        const expectedLast = (index + 1) * 0.2;
+        assert.ok(Math.abs((fractions[last] ?? 0) - expectedLast) < 0.03, `${hex} fraction`);
+        assert.ok(Math.abs((fractions[first] ?? 0) - (1 - expectedLast)) < 0.03, `${hex} fraction`);
+      });
+    }
+  }
+});
+
+test("classifyPaletteColors lets two colors that bracket each other both serve as mix partners", () => {
+  // #3BB5B2 sits between white and #038D8C, and #038D8C sits between #3BB5B2
+  // and near-black. The old classifier let each teal disqualify the other as
+  // a partner, so the light teal fell back to white + near-black.
+  const colors = paletteFromHexCoverage([
+    ["#FFFFFF", 40],
+    ["#038D8C", 14],
+    ["#3BB5B2", 12],
+    ["#020F1A", 10],
+    ["#92D8D7", 8],
+    ["#FAD678", 6]
+  ]);
+  for (const residualThreshold of OKLAB_PRESETS) {
+    const classifications = classifyPaletteColors(colors, {
+      residualThreshold,
+      mixCoveragePercent: 0
+    });
+    assertCoherent(classifications);
+    const lightTeal = classifications.find((entry) => entry.id === "#92D8D7")!;
+    assert.equal(lightTeal.classification, "mix", `at ${residualThreshold}`);
+    const partners = lightTeal.recipe!.components.map((component) => component.colorId);
+    assert.ok(partners.includes("#FFFFFF"));
+    assert.ok(
+      partners.includes("#3BB5B2") || partners.includes("#038D8C"),
+      `light teal mixes from ${partners.join(" + ")} at ${residualThreshold}`
+    );
+    assert.ok(!partners.includes("#020F1A"));
+  }
+
+  // At the conservative preset both teals stay buy, and the light teal is
+  // the white + #3BB5B2 tint the old classifier could not see.
+  const conservative = classifyPaletteColors(colors, {
+    residualThreshold: 0.02,
+    mixCoveragePercent: 0
+  });
+  const byId = new Map(conservative.map((entry) => [entry.id, entry]));
+  assert.equal(byId.get("#3BB5B2")?.classification, "buy");
+  assert.equal(byId.get("#038D8C")?.classification, "buy");
+  assert.deepEqual(
+    byId.get("#92D8D7")!.recipe!.components.map((component) => component.colorId).sort(),
+    ["#3BB5B2", "#FFFFFF"]
+  );
+});
+
+test("classifyPaletteColors does not pick a much rarer color as a mix partner", () => {
+  // "mid" lies between white and a 1% accent. It covers 8%, so mixing it
+  // from the accent would mean buying the accent mostly for mid's sake.
+  const colors: ClassifyPaletteInput[] = [
+    { id: "white", rgb: [255, 255, 255], pixelCount: 600 },
+    { id: "mid", rgb: [170, 170, 230], pixelCount: 80 },
+    { id: "other", rgb: [200, 60, 40], pixelCount: 300 },
+    { id: "accent", rgb: [85, 85, 205], pixelCount: 10 }
+  ];
+  const classifications = classifyPaletteColors(colors, {
+    residualThreshold: 0.04,
+    mixCoveragePercent: 5
+  });
+  const byId = new Map(classifications.map((entry) => [entry.id, entry]));
+  assert.equal(byId.get("mid")?.classification, "buy");
+  assert.equal(byId.get("accent")?.classification, "buy");
 });
 
 test("applyClassification folds absorbed pixel counts into the keeper and surfaces mix recipes", () => {

@@ -122,14 +122,26 @@ export type ClassifyPaletteInput = {
 };
 
 export type ClassifyPaletteOptions = {
-  /** Maximum per-channel residual (in 0-255 RGB units) for a color to count as
-   * lying on a mixing line. Default 18. Lower = stricter, keeps more buy
-   * colors; higher = more aggressive, collapses more onto mixing lines. */
+  /** Maximum OKLab distance (perceptual; ~0.02 is a just-noticeable
+   * difference, black-to-white is 1.0) between a color and the closest point
+   * on a two-color mixing line for it to count as a mix, and also the
+   * near-duplicate merge distance. Lower = stricter, keeps more buy colors;
+   * higher = more aggressive, collapses more onto mixing lines. */
   residualThreshold: number;
   /** Coverage percent threshold that splits mix (kept with recipe, >= threshold)
    * from absorb (silently folded into nearest endpoint, < threshold). */
   mixCoveragePercent: number;
+  /** Colors covering at least this percent of the image (after near-duplicate
+   * merging) are always buy — never a mix or absorb target. Default 15. */
+  dominantCoveragePercent?: number;
 };
+
+export const DEFAULT_DOMINANT_COVERAGE_PERCENT = 15;
+
+// See classifyPaletteColors: a mix partner must cover at least this share of
+// what the mixed color covers. 0.5 leaves room for pixel-count noise across
+// an evenly weighted gradient while blocking rare accents as partners.
+const MIN_PARTNER_COVERAGE_RATIO = 0.5;
 
 export type ClassifiedColor = {
   id: string;
@@ -449,103 +461,116 @@ export function classifyPaletteColors(
   if (!Number.isFinite(options.mixCoveragePercent) || options.mixCoveragePercent < 0) {
     throw new Error("Mix coverage percent must be zero or greater.");
   }
+  const dominantCoveragePercent =
+    options.dominantCoveragePercent ?? DEFAULT_DOMINANT_COVERAGE_PERCENT;
+  if (!Number.isFinite(dominantCoveragePercent) || dominantCoveragePercent < 0) {
+    throw new Error("Dominant coverage percent must be zero or greater.");
+  }
 
   const totalPixels = colors.reduce((sum, color) => sum + color.pixelCount, 0);
   if (totalPixels <= 0 || colors.length === 0) {
     return [];
   }
 
-  const coverageById = new Map<string, number>();
-  for (const color of colors) {
-    coverageById.set(color.id, (color.pixelCount / totalPixels) * 100);
-  }
-
   // Phase 0: near-duplicate dedup. Real-image palettes capture many colors
-  // that are geometric neighbors of each other in RGB space without being on
-  // a three-point mixing line. The line-fitting algorithm alone misses them.
-  // Here we merge any pair whose Euclidean RGB distance falls below the
-  // residual threshold — the lower-coverage member absorbs into the
-  // higher-coverage one, silently (no mix recipe).
-  const dedupResult = dedupNearestNeighbors(colors, options.residualThreshold);
+  // that are perceptual neighbors without being on a three-point mixing
+  // line. Any pair closer than the residual threshold (OKLab distance) is
+  // merged — the lower-coverage member absorbs into the higher-coverage
+  // one, silently (no mix recipe). Survivor pixel counts include the
+  // pixels they absorbed. A dominant color is never the absorbed member.
+  const dedupResult = dedupNearestNeighbors(
+    colors,
+    options.residualThreshold,
+    (dominantCoveragePercent / 100) * totalPixels
+  );
   const survivors = dedupResult.survivors;
   const dedupAbsorbs = dedupResult.absorbs; // id -> keeperId
 
-  if (survivors.length === 0) {
-    return colors.map((color) => ({
-      id: color.id,
-      classification: "absorb",
-      absorbedIntoId: dedupAbsorbs.get(color.id) ?? color.id
-    }));
-  }
+  const coverageOf = (color: ClassifyPaletteInput) => (color.pixelCount / totalPixels) * 100;
+  const isDominant = (color: ClassifyPaletteInput) =>
+    coverageOf(color) >= dominantCoveragePercent;
 
-  // Phase 1: identify extreme (buy) colors among survivors. A color is
-  // extreme if no pair of *other* survivor colors can express it as a
-  // segment interpolation within the residual threshold. In a gradient, the
-  // two endpoints are extreme and every middle step is interior.
-  const extremeIds = new Set<string>();
-  for (const candidate of survivors) {
-    const others = survivors.filter((color) => color.id !== candidate.id);
-    const fit = findBestMixingPair(candidate, others, options.residualThreshold);
-    if (!fit) {
-      extremeIds.add(candidate.id);
+  // A color may only be mixed from buy colors that each cover at least
+  // MIN_PARTNER_COVERAGE_RATIO of what it covers. Mixing an 8% color from a
+  // 1% accent means buying the accent in bulk for someone else's sake and
+  // is how a rarely used indigo ended up as a partner over a closer, more
+  // common color. In the greedy pass below this holds automatically (every
+  // earlier buy has at least as many pixels); the explicit filter keeps the
+  // settle pass to the same rule.
+  const ordered = [...survivors].sort(
+    (left, right) => right.pixelCount - left.pixelCount || left.id.localeCompare(right.id)
+  );
+  const buyIds = new Set<string>();
+  const fitFromBuys = (color: ClassifyPaletteInput) =>
+    findBestMixingPair(
+      color,
+      ordered.filter(
+        (entry) =>
+          buyIds.has(entry.id) &&
+          entry.id !== color.id &&
+          entry.pixelCount >= color.pixelCount * MIN_PARTNER_COVERAGE_RATIO
+      ),
+      options.residualThreshold
+    );
+
+  // Phase 1: greedy, coverage-ordered buy set. Survivors are visited from
+  // most to least used. Each one is tested against the buy set built so far:
+  // if two existing buy colors mix to it within the threshold it is a mix
+  // target, otherwise it joins the buy set. Common colors therefore become
+  // partners before rare ones, and a partner is always a buy color — the old
+  // "is it bracketed by any two others?" test let two colors disqualify each
+  // other and fell back to white + black for anything between them.
+  // Dominant colors (>= dominantCoveragePercent of the image) always buy.
+  for (const color of ordered) {
+    if (isDominant(color) || !fitFromBuys(color)) {
+      buyIds.add(color.id);
     }
   }
 
-  // Degenerate fallback: if every survivor sits on some mixing line,
-  // promote the highest-coverage survivor so we always have at least one buy.
-  if (extremeIds.size === 0) {
-    let topId: string | null = null;
-    let topPixels = -Infinity;
-    for (const color of survivors) {
-      if (color.pixelCount > topPixels) {
-        topPixels = color.pixelCount;
-        topId = color.id;
+  // Phase 2: settle. Greedy order alone cannot collapse a gradient whose
+  // steps cover about the same area — the first two steps visited become
+  // buys and every later step only extends the line. So a non-dominant buy
+  // that now sits between two other (eligible) buys is demoted, least-used
+  // first. Demotion can strand a mix whose partner it removed, so any
+  // non-buy that no longer fits joins the buy set and the loop repeats.
+  // Bounded by the survivor count.
+  for (let pass = 0; pass < survivors.length; pass += 1) {
+    let changed = false;
+    const ascendingBuys = ordered.filter((entry) => buyIds.has(entry.id)).reverse();
+    for (const color of ascendingBuys) {
+      if (isDominant(color)) continue;
+      if (fitFromBuys(color)) {
+        buyIds.delete(color.id);
+        changed = true;
       }
     }
-    if (topId) extremeIds.add(topId);
+    for (const color of ordered) {
+      if (buyIds.has(color.id)) continue;
+      if (!fitFromBuys(color)) {
+        buyIds.add(color.id);
+        changed = true;
+      }
+    }
+    if (!changed) break;
   }
 
-  const extremes = survivors.filter((color) => extremeIds.has(color.id));
+  // Phase 3: classify every non-buy survivor against the final buy set as
+  // mix (coverage >= mixCoveragePercent, keeps a recipe) or absorb (folds
+  // into the nearer partner).
   const classifications = new Map<string, ClassifiedColor>();
-
-  // Phase 2: interior survivors classify as mix or absorb based on coverage.
-  // Recompute coverage using the *absorbed* pixel counts so dedup-absorbed
-  // members contribute to their keeper's mix-threshold check.
-  const adjustedPixelsById = new Map<string, number>();
-  for (const survivor of survivors) {
-    adjustedPixelsById.set(survivor.id, survivor.pixelCount);
-  }
-  for (const [absorbedId, keeperId] of dedupAbsorbs.entries()) {
-    const absorbed = colors.find((color) => color.id === absorbedId);
-    if (!absorbed) continue;
-    const current = adjustedPixelsById.get(keeperId) ?? 0;
-    adjustedPixelsById.set(keeperId, current + absorbed.pixelCount);
-  }
-  const adjustedCoverageById = new Map<string, number>();
-  let adjustedTotal = 0;
-  for (const value of adjustedPixelsById.values()) adjustedTotal += value;
-  if (adjustedTotal > 0) {
-    for (const [id, pixels] of adjustedPixelsById.entries()) {
-      adjustedCoverageById.set(id, (pixels / adjustedTotal) * 100);
-    }
-  }
-
   for (const color of survivors) {
-    if (extremeIds.has(color.id)) {
+    if (buyIds.has(color.id)) {
       classifications.set(color.id, { id: color.id, classification: "buy" });
       continue;
     }
-
-    const fit = findBestMixingPair(color, extremes, options.residualThreshold);
+    const fit = fitFromBuys(color);
     if (!fit) {
+      // Unreachable after Phase 2 settles; kept as a safe default.
       classifications.set(color.id, { id: color.id, classification: "buy" });
       continue;
     }
-
-    const coverage = adjustedCoverageById.get(color.id) ?? coverageById.get(color.id) ?? 0;
     const { endpointA, endpointB, t } = fit;
-
-    if (coverage >= options.mixCoveragePercent) {
+    if (coverageOf(color) >= options.mixCoveragePercent) {
       classifications.set(color.id, {
         id: color.id,
         classification: "mix",
@@ -576,7 +601,7 @@ export function classifyPaletteColors(
   }
 
   // Final path compression across the full classification map. A Phase 0
-  // keeper can itself be classified as absorb in Phase 2 (it survived dedup
+  // keeper can itself be classified as absorb in Phase 3 (it survived dedup
   // but turned out to be on a mixing line). Without this walk, colors that
   // Phase 0 routed to that keeper now point at an absorbed id, and
   // applyClassification's pixelCount fold throws when it hits the stale
@@ -601,10 +626,14 @@ export function classifyPaletteColors(
 
 function dedupNearestNeighbors(
   colors: ClassifyPaletteInput[],
-  threshold: number
+  threshold: number,
+  dominantPixelCount: number
 ): { survivors: ClassifyPaletteInput[]; absorbs: Map<string, string> } {
   const survivors: ClassifyPaletteInput[] = colors.map((color) => ({ ...color }));
   const absorbs = new Map<string, string>();
+  // Distances are OKLab (perceptual). A keeper keeps its own rgb when it
+  // absorbs a neighbor, so each color's OKLab point is computed once.
+  const labById = new Map(colors.map((color) => [color.id, rgbToOklab(color.rgb)]));
 
   // Repeated nearest-pair merge. Each pass picks the tightest pair; the
   // lower-pixelCount member absorbs into the higher-pixelCount one. Bounded
@@ -619,11 +648,11 @@ function dedupNearestNeighbors(
       for (let j = i + 1; j < survivors.length; j += 1) {
         const a = survivors[i]!;
         const b = survivors[j]!;
-        const dx = a.rgb[0] - b.rgb[0];
-        const dy = a.rgb[1] - b.rgb[1];
-        const dz = a.rgb[2] - b.rgb[2];
-        const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const distance = oklabDistance(labById.get(a.id)!, labById.get(b.id)!);
         if (distance >= threshold) continue;
+        // The absorbed member is the smaller one, so if it is dominant both
+        // are, and two dominant colors both stay.
+        if (Math.min(a.pixelCount, b.pixelCount) >= dominantPixelCount) continue;
         if (distance < bestDistance) {
           bestDistance = distance;
           // Keeper = the one with more pixels, or lexicographically smaller
@@ -685,6 +714,27 @@ function dedupNearestNeighbors(
   return { survivors, absorbs };
 }
 
+// Among pairs that fit under the threshold, a pair counts as "clearly better"
+// on residual only when it beats the best residual by more than this share
+// of the threshold. Inside that band, partner coverage decides.
+const PARTNER_RESIDUAL_SLACK = 0.25;
+
+/**
+ * Find the two buy colors that best mix to `candidate`.
+ *
+ * Fit (Variant A): the mix path is the straight sRGB line between the two
+ * buy colors — digital gradient tools interpolate in sRGB. `t` is the
+ * candidate's projection onto that line in sRGB; the residual is the OKLab
+ * distance between the candidate and the sRGB point at `t`, so the
+ * tolerance is perceptual and a hue the line misses (white + black for a
+ * teal) costs its full chroma difference.
+ *
+ * Scoring: let `best` be the lowest residual among fitting pairs. Every pair
+ * within `best + PARTNER_RESIDUAL_SLACK * threshold` is acceptable; among
+ * those, pick the pair whose less-used partner has the most pixels (a
+ * painter would rather mix from paint they are buying plenty of), then the
+ * lower residual, then the higher combined pixel count.
+ */
 function findBestMixingPair(
   candidate: ClassifyPaletteInput,
   buyColors: ClassifyPaletteInput[],
@@ -692,45 +742,55 @@ function findBestMixingPair(
 ): { endpointA: ClassifyPaletteInput; endpointB: ClassifyPaletteInput; t: number; residual: number } | null {
   if (buyColors.length < 2) return null;
 
-  let best: {
+  const candidateLab = rgbToOklab(candidate.rgb);
+  const fits: {
     endpointA: ClassifyPaletteInput;
     endpointB: ClassifyPaletteInput;
     t: number;
     residual: number;
-    combinedPixelCount: number;
-  } | null = null;
+  }[] = [];
 
   for (let i = 0; i < buyColors.length; i += 1) {
     for (let j = i + 1; j < buyColors.length; j += 1) {
       const a = buyColors[i]!;
       const b = buyColors[j]!;
-      const fit = projectOntoSegment(candidate.rgb, a.rgb, b.rgb);
+      const fit = projectOntoSegment(candidate.rgb, candidateLab, a.rgb, b.rgb);
       if (fit === null) continue;
       if (fit.residual > residualThreshold) continue;
-
-      const combinedPixelCount = a.pixelCount + b.pixelCount;
-      if (
-        !best ||
-        fit.residual < best.residual - 1e-6 ||
-        (Math.abs(fit.residual - best.residual) < 1e-6 &&
-          combinedPixelCount > best.combinedPixelCount)
-      ) {
-        best = { endpointA: a, endpointB: b, t: fit.t, residual: fit.residual, combinedPixelCount };
-      }
+      fits.push({ endpointA: a, endpointB: b, t: fit.t, residual: fit.residual });
     }
   }
 
-  if (!best) return null;
-  return {
-    endpointA: best.endpointA,
-    endpointB: best.endpointB,
-    t: best.t,
-    residual: best.residual
-  };
+  if (fits.length === 0) return null;
+
+  const bestResidual = Math.min(...fits.map((fit) => fit.residual));
+  const cutoff = bestResidual + PARTNER_RESIDUAL_SLACK * residualThreshold;
+  let best: (typeof fits)[number] | null = null;
+  let bestMinPixels = -Infinity;
+  let bestCombined = -Infinity;
+  for (const fit of fits) {
+    if (fit.residual > cutoff) continue;
+    const minPixels = Math.min(fit.endpointA.pixelCount, fit.endpointB.pixelCount);
+    const combined = fit.endpointA.pixelCount + fit.endpointB.pixelCount;
+    if (
+      !best ||
+      minPixels > bestMinPixels ||
+      (minPixels === bestMinPixels &&
+        (fit.residual < best.residual - 1e-9 ||
+          (Math.abs(fit.residual - best.residual) <= 1e-9 && combined > bestCombined)))
+    ) {
+      best = fit;
+      bestMinPixels = minPixels;
+      bestCombined = combined;
+    }
+  }
+
+  return best;
 }
 
 function projectOntoSegment(
   point: [number, number, number],
+  pointLab: [number, number, number],
   a: [number, number, number],
   b: [number, number, number]
 ): { t: number; residual: number } | null {
@@ -747,11 +807,45 @@ function projectOntoSegment(
     a[1] + t * ab[1],
     a[2] + t * ab[2]
   ];
-  const dx = point[0] - projected[0];
-  const dy = point[1] - projected[1];
-  const dz = point[2] - projected[2];
-  const residual = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  const residual = oklabDistance(pointLab, rgbToOklab(projected));
   return { t, residual };
+}
+
+/**
+ * sRGB (0-255 per channel) to OKLab, per Björn Ottosson's published
+ * reference (https://bottosson.github.io/posts/oklab/). L runs 0 (black) to
+ * 1 (white); Euclidean distance between two OKLab points is a perceptual
+ * color difference, with ~0.02 near the just-noticeable threshold.
+ */
+export function rgbToOklab(rgb: readonly [number, number, number]): [number, number, number] {
+  const r = srgbChannelToLinear(rgb[0]);
+  const g = srgbChannelToLinear(rgb[1]);
+  const b = srgbChannelToLinear(rgb[2]);
+
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+
+  return [
+    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s
+  ];
+}
+
+function srgbChannelToLinear(channel: number): number {
+  const c = channel / 255;
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+
+function oklabDistance(
+  left: readonly [number, number, number],
+  right: readonly [number, number, number]
+): number {
+  const dL = left[0] - right[0];
+  const da = left[1] - right[1];
+  const db = left[2] - right[2];
+  return Math.sqrt(dL * dL + da * da + db * db);
 }
 
 export type ApplyClassificationResult = {
