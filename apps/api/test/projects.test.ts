@@ -569,3 +569,56 @@ test("PATCH /projects/:id/metadata updates name and mirrors to thumbnail tile", 
 
   await teardown();
 });
+
+test("POST /projects accepts palette with locked: true on a color and returns it", async () => {
+  const { app, teardown } = await setupHarness(sessionFor("lock-flag-true"));
+
+  const response = await mutatingInject(app, {
+    method: "POST",
+    url: "/projects",
+    payload: {
+      name: "Locked Color Project",
+      palette: {
+        colors: [
+          { id: "c1", hex: "#ff0000", coverage: 0.5, locked: true },
+          { id: "c2", hex: "#00ff00", coverage: 0.5 }
+        ]
+      },
+      image: SAMPLE_JPEG_B64,
+      thumbnail: SMALL_JPEG_B64
+    }
+  });
+  assert.equal(response.statusCode, 201, response.body);
+  const { id } = response.json() as { id: string };
+
+  const full = await app.inject({ method: "GET", url: `/projects/${id}` });
+  assert.equal(full.statusCode, 200);
+  const body = full.json() as { palette: { colors: Array<{ id: string; locked?: boolean }> } };
+  assert.equal(body.palette.colors.find((c) => c.id === "c1")?.locked, true);
+  assert.equal(body.palette.colors.find((c) => c.id === "c2")?.locked, undefined);
+
+  await teardown();
+});
+
+test("POST /projects rejects palette with non-boolean locked value", async () => {
+  const { app, teardown } = await setupHarness(sessionFor("lock-flag-invalid"));
+
+  const response = await mutatingInject(app, {
+    method: "POST",
+    url: "/projects",
+    payload: {
+      name: "Bad Lock Flag",
+      palette: {
+        colors: [
+          { id: "c1", hex: "#ff0000", coverage: 0.5, locked: "yes" },
+          { id: "c2", hex: "#00ff00", coverage: 0.5 }
+        ]
+      },
+      image: SAMPLE_JPEG_B64,
+      thumbnail: SMALL_JPEG_B64
+    }
+  });
+  assert.equal(response.statusCode, 400, response.body);
+
+  await teardown();
+});

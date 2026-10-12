@@ -12,7 +12,10 @@ const paletteColorSchema = z.object({
   id: z.string().min(1).max(100),
   hex: hexColorSchema,
   coverage: z.number().min(0).max(1),
-  classification: classificationSchema.optional()
+  classification: classificationSchema.optional(),
+  // User-toggled: when true Auto-combine never absorbs or mixes this color
+  // away (it stays a buy color). Optional so legacy payloads still validate.
+  locked: z.boolean().optional()
 });
 
 const mergeOperationSchema = z.object({
