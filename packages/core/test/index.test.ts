@@ -1598,3 +1598,149 @@ test("classifyPaletteColors keeps Coral's flat red at Aggressive", () => {
     assert.notEqual(red.classification, "absorb", `red absorbed into ${red.absorbedIntoId} at ${residualThreshold}`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Background colors (bare wall, no paint): never a mix partner, never a mix
+// target, never absorbed. Near-duplicates and sub-1% edge pixels may still
+// fold into them. See docs/plans/mix-accuracy.md, "Background colors and
+// mixing".
+// ---------------------------------------------------------------------------
+
+const BACKGROUND_PALETTES: Record<string, { colors: ClassifyPaletteInput[]; backgroundId: string }> = {
+  teal: {
+    colors: paletteFromHexCoverage([
+      ["#FFFFFF", 50.7],
+      ["#92D8D7", 21.4],
+      ["#038D8C", 8.9],
+      ["#390E5D", 6.9],
+      ["#FAD678", 6.0],
+      ["#020F1A", 3.3],
+      ["#3BB5B2", 2.7],
+      ["#C1A76C", 0.1]
+    ]),
+    backgroundId: "#FFFFFF"
+  },
+  flowerRepeat: { colors: FLOWER_REPEAT, backgroundId: "#FAFBFB" },
+  grays: {
+    colors: paletteFromHexCoverage([
+      ["#FFFFFF", 35],
+      ["#000000", 25],
+      ["#808080", 20],
+      ["#404040", 6],
+      ["#858585", 5],
+      ["#C0C0C0", 5],
+      ["#7B7B7B", 4]
+    ]),
+    backgroundId: "#FFFFFF"
+  }
+};
+
+test("classifyPaletteColors never uses a background color as a mix partner, target or absorbed color", () => {
+  for (const [name, { colors, backgroundId }] of Object.entries(BACKGROUND_PALETTES)) {
+    for (const residualThreshold of OKLAB_PRESETS) {
+      for (const mixCoveragePercent of [0, 5]) {
+        for (const dominantCoveragePercent of [15, 100]) {
+          // Locked + background on the same color: background wins for the
+          // partner rule.
+          for (const lockBackground of [false, true]) {
+            const label = `${name}, threshold ${residualThreshold}, mix ${mixCoveragePercent}%, dominant ${dominantCoveragePercent}%, locked ${lockBackground}`;
+            const classifications = classifyPaletteColors(colors, {
+              residualThreshold,
+              mixCoveragePercent,
+              dominantCoveragePercent,
+              backgroundIds: new Set([backgroundId]),
+              lockedIds: lockBackground ? new Set([backgroundId]) : undefined
+            });
+            const background = classifications.find((entry) => entry.id === backgroundId)!;
+            assert.equal(background.classification, "buy", `background reclassified at ${label}`);
+            for (const entry of classifications) {
+              if (entry.classification !== "mix") continue;
+              const partners = entry.recipe!.components.map((component) => component.colorId);
+              assert.ok(!partners.includes(backgroundId), `${entry.id} mixes with the background at ${label}`);
+            }
+            assertCoherent(classifications);
+            assertPlausibleRecipes(colors, classifications, label);
+            assert.doesNotThrow(() => applyClassification(colors, classifications));
+          }
+        }
+      }
+    }
+  }
+});
+
+test("classifyPaletteColors does not make FlowerRepeat's light yellow from a background white", () => {
+  // Balanced, mix threshold 0: without background ids light yellow is
+  // white + dark yellow. With white as bare wall it must buy or use another
+  // plausible recipe.
+  const classifications = classifyPaletteColors(FLOWER_REPEAT, {
+    residualThreshold: 0.04,
+    mixCoveragePercent: 0,
+    backgroundIds: new Set(["#FAFBFB"])
+  });
+  const lightYellow = classifications.find((entry) => entry.id === "#F9D55F")!;
+  assert.notEqual(lightYellow.classification, "absorb");
+  if (lightYellow.classification === "mix") {
+    assert.ok(
+      !lightYellow.recipe!.components.some((component) => component.colorId === "#FAFBFB"),
+      "light yellow mixes with the background"
+    );
+  }
+});
+
+test("classifyPaletteColors folds near-duplicates of a background color into it", () => {
+  // Paper grain / wall texture: a slightly darker white that is even larger
+  // than the background chip still folds into the background (like a lock).
+  const colors = paletteFromHexCoverage([...FLOWER_REPEAT.map((color) => [
+    `#${color.rgb.map((channel) => channel.toString(16).padStart(2, "0")).join("").toUpperCase()}`,
+    color.pixelCount / 10
+  ] as [string, number]), ["#F6F7F7", 6.0]]);
+  for (const residualThreshold of OKLAB_PRESETS) {
+    const classifications = classifyPaletteColors(colors, {
+      residualThreshold,
+      mixCoveragePercent: 5,
+      backgroundIds: new Set(["#FAFBFB"])
+    });
+    const byId = new Map(classifications.map((entry) => [entry.id, entry]));
+    assert.equal(byId.get("#FAFBFB")?.classification, "buy", `at ${residualThreshold}`);
+    assert.equal(byId.get("#F6F7F7")?.classification, "absorb", `at ${residualThreshold}`);
+    assert.equal(byId.get("#F6F7F7")?.absorbedIntoId, "#FAFBFB", `at ${residualThreshold}`);
+    assertCoherent(classifications);
+  }
+});
+
+test("classifyPaletteColors absorbs sub-1% edge pixels into a nearer background color but never mixes them", () => {
+  // Anti-aliasing between a bare white wall and a flat red: the 0.4% edge
+  // pixel sits 20% of the way from white to red.
+  const white: [number, number, number] = [255, 255, 255];
+  const red: [number, number, number] = [200, 30, 40];
+  const edge = white.map((channel, index) => Math.round(channel * 0.8 + red[index]! * 0.2)) as [
+    number,
+    number,
+    number
+  ];
+  const colors: ClassifyPaletteInput[] = [
+    { id: "wall", rgb: white, pixelCount: 5000 },
+    { id: "red", rgb: red, pixelCount: 3000 },
+    { id: "blue", rgb: [30, 40, 200], pixelCount: 1960 },
+    { id: "edge", rgb: edge, pixelCount: 40 }
+  ];
+  for (const residualThreshold of OKLAB_PRESETS) {
+    const absorbed = classifyPaletteColors(colors, {
+      residualThreshold,
+      mixCoveragePercent: 5,
+      backgroundIds: new Set(["wall"])
+    });
+    const edgeEntry = absorbed.find((entry) => entry.id === "edge")!;
+    assert.equal(edgeEntry.classification, "absorb", `at ${residualThreshold}`);
+    assert.equal(edgeEntry.absorbedIntoId, "wall", `at ${residualThreshold}`);
+
+    // Mix threshold 0 keeps every color exact; a wall + paint recipe is not
+    // possible, so the edge pixel stays its own buy color.
+    const exact = classifyPaletteColors(colors, {
+      residualThreshold,
+      mixCoveragePercent: 0,
+      backgroundIds: new Set(["wall"])
+    });
+    assert.equal(exact.find((entry) => entry.id === "edge")?.classification, "buy", `at ${residualThreshold}`);
+  }
+});

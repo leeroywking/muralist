@@ -11,7 +11,9 @@
 
 import {
   applyClassification,
+  applyMixesToCoverage,
   classifyPaletteColors,
+  type ColorAreaInput,
   type MixRecipe,
   type PaletteClassification
 } from "@muralist/core";
@@ -57,7 +59,13 @@ export type AutoCombineResult<T> = {
 /** Classify `base` and fold absorbed colors into their keepers. Pure. */
 export function runAutoCombine<T extends AutoCombineColor>(
   base: readonly T[],
-  options: { residualThreshold: number; mixCoveragePercent: number }
+  options: {
+    residualThreshold: number;
+    mixCoveragePercent: number;
+    /** Background (bare wall) color ids: never a mix partner, never mixed or
+     * absorbed (see ClassifyPaletteOptions.backgroundIds). */
+    backgroundIds?: ReadonlySet<string>;
+  }
 ): AutoCombineResult<T> {
   const classifierInput = base.map((color) => ({
     id: color.id,
@@ -68,7 +76,8 @@ export function runAutoCombine<T extends AutoCombineColor>(
   const classifiedList = classifyPaletteColors(classifierInput, {
     residualThreshold: options.residualThreshold,
     mixCoveragePercent: options.mixCoveragePercent,
-    lockedIds
+    lockedIds,
+    backgroundIds: options.backgroundIds
   });
   const { nextColors, mixes, absorbedCount } = applyClassification(classifierInput, classifiedList);
 
@@ -89,4 +98,55 @@ export function runAutoCombine<T extends AutoCombineColor>(
     if (retainedIds.has(entry.id)) classifications[entry.id] = entry.classification;
   }
   return { palette, classifications, mixes, absorbedCount };
+}
+
+/**
+ * Marking a color as background after an Auto-combine: recipes that use it
+ * as a partner (or mix it) are dropped and their targets become buy colors.
+ * The rest of the classification is left alone; pressing Auto-combine again
+ * re-classifies from the snapshot with the color excluded as a partner.
+ */
+export function dropRecipesUsingColor(
+  mixes: readonly MixRecipe[],
+  classifications: Readonly<Record<string, PaletteClassification>>,
+  colorId: string
+): { mixes: MixRecipe[]; classifications: Record<string, PaletteClassification>; droppedTargetIds: string[] } {
+  const kept: MixRecipe[] = [];
+  const droppedTargetIds: string[] = [];
+  for (const mix of mixes) {
+    if (
+      mix.targetColorId === colorId ||
+      mix.components.some((component) => component.colorId === colorId)
+    ) {
+      droppedTargetIds.push(mix.targetColorId);
+    } else {
+      kept.push(mix);
+    }
+  }
+  const nextClassifications = { ...classifications };
+  for (const id of droppedTargetIds) {
+    if (id in nextClassifications) nextClassifications[id] = "buy";
+  }
+  return { mixes: kept, classifications: nextClassifications, droppedTargetIds };
+}
+
+/**
+ * applyMixesToCoverage over the recipes that still make sense for `colors`
+ * (the paintable palette): a recipe whose target or any component is not in
+ * the list — e.g. it uses a color since marked as background, or a color a
+ * manual merge removed — is skipped, so one stale recipe never drops every
+ * mix from the estimate.
+ */
+export function applyValidMixesToCoverage(
+  colors: readonly ColorAreaInput[],
+  mixes: readonly MixRecipe[]
+): ColorAreaInput[] {
+  const ids = new Set(colors.map((color) => color.id));
+  const valid = mixes.filter(
+    (mix) =>
+      ids.has(mix.targetColorId) &&
+      mix.components.every((component) => ids.has(component.colorId)) &&
+      Math.abs(mix.components.reduce((sum, component) => sum + component.fraction, 0) - 1) <= 1e-3
+  );
+  return applyMixesToCoverage([...colors], valid);
 }

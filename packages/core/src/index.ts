@@ -146,6 +146,21 @@ export type ClassifyPaletteOptions = {
    * into the locked one unless it is dominant (then both stay); two locked
    * colors never merge. Omitted or empty = no locks. */
   lockedIds?: ReadonlySet<string>;
+  /** Ids of background colors (bare wall, left unpainted). A background
+   * color is never a mix partner — no recipe ever lists it as a component,
+   * even if it is also locked (background wins) — and, like a lock, it is
+   * never a mix target and never absorbed into another color. Two things may
+   * still fold INTO it: its own near-duplicates in the Phase 0 dedup (paper
+   * grain / wall texture noise collapses into the bare wall), and sub-1%
+   * edge pixels on a line between it and a paint color, when the color would
+   * be absorbed anyway (coverage below mixCoveragePercent) — they fold into
+   * the nearer endpoint, the anti-aliasing seam between wall and paint. A
+   * paint color that could only be explained as "X + background" falls back
+   * to the normal no-fit path (buy). Coverage stays whole-image-relative:
+   * background pixels still count in the denominator for the dominant,
+   * mix-coverage and edge thresholds, matching the editor, where coverage
+   * percentages are always of the whole image. Omitted or empty = none. */
+  backgroundIds?: ReadonlySet<string>;
 };
 
 export const DEFAULT_DOMINANT_COVERAGE_PERCENT = 15;
@@ -580,11 +595,15 @@ export function classifyPaletteColors(
   // one, silently (no mix recipe). Survivor pixel counts include the
   // pixels they absorbed. A dominant color is never the absorbed member.
   const isLockedId = (id: string) => options.lockedIds?.has(id) ?? false;
+  const isBackgroundId = (id: string) => options.backgroundIds?.has(id) ?? false;
+  // A background color is kept like a locked one: always buy, never absorbed
+  // (its near-duplicates fold into it), never a mix target.
+  const isPinnedId = (id: string) => isLockedId(id) || isBackgroundId(id);
   const dedupResult = dedupNearestNeighbors(
     colors,
     Math.min(options.residualThreshold, MAX_DEDUP_DISTANCE),
     (dominantCoveragePercent / 100) * totalPixels,
-    isLockedId
+    isPinnedId
   );
   const survivors = dedupResult.survivors;
   const dedupAbsorbs = dedupResult.absorbs; // id -> keeperId
@@ -604,13 +623,17 @@ export function classifyPaletteColors(
     (left, right) => right.pixelCount - left.pixelCount || left.id.localeCompare(right.id)
   );
   const buyIds = new Set<string>();
-  const fitFromBuys = (color: ClassifyPaletteInput) =>
+  // Background colors are buy-set members (so nothing absorbs them) but not
+  // mix partners. `allowBackground` admits them only for the edge-pixel
+  // absorb in nonBuyFit, where no recipe is produced.
+  const fitFromBuys = (color: ClassifyPaletteInput, allowBackground = false) =>
     findBestMixingPair(
       color,
       ordered.filter(
         (entry) =>
           buyIds.has(entry.id) &&
           entry.id !== color.id &&
+          (allowBackground || !isBackgroundId(entry.id)) &&
           entry.pixelCount >= color.pixelCount * MIN_PARTNER_COVERAGE_RATIO
       ),
       options.residualThreshold
@@ -626,9 +649,13 @@ export function classifyPaletteColors(
   const absorbTargetOf = (fit: NonNullable<ReturnType<typeof fitFromBuys>>) =>
     fit.t < 0.5 ? fit.endpointA : fit.endpointB;
   const nonBuyFit = (color: ClassifyPaletteInput) => {
-    const fit = fitFromBuys(color);
-    if (!fit) return null;
     const coverage = coverageOf(color);
+    // Edge pixels that will be absorbed (not mixed) may sit on a line with a
+    // background endpoint: the seam between bare wall and paint.
+    const edgeAbsorb =
+      coverage < EDGE_COVERAGE_PERCENT && coverage < options.mixCoveragePercent;
+    const fit = fitFromBuys(color, edgeAbsorb);
+    if (!fit) return null;
     if (coverage >= options.mixCoveragePercent || coverage < EDGE_COVERAGE_PERCENT) return fit;
     const distance = oklabDistance(labOf.get(color.id)!, labOf.get(absorbTargetOf(fit).id)!);
     return distance <= absorbDistanceLimit ? fit : null;
@@ -646,7 +673,7 @@ export function classifyPaletteColors(
   // small locked accent is already available as a partner when larger
   // colors are tested (subject to the partner-coverage rule above).
   for (const color of ordered) {
-    if (isLockedId(color.id)) buyIds.add(color.id);
+    if (isPinnedId(color.id)) buyIds.add(color.id);
   }
   for (const color of ordered) {
     if (buyIds.has(color.id)) continue;
@@ -666,7 +693,7 @@ export function classifyPaletteColors(
     let changed = false;
     const ascendingBuys = ordered.filter((entry) => buyIds.has(entry.id)).reverse();
     for (const color of ascendingBuys) {
-      if (isDominant(color) || isLockedId(color.id)) continue;
+      if (isDominant(color) || isPinnedId(color.id)) continue;
       if (nonBuyFit(color)) {
         buyIds.delete(color.id);
         changed = true;

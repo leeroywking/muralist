@@ -13,14 +13,18 @@ import type {
   WorkspaceContent
 } from "@muralist/core";
 import {
-  applyMixesToCoverage,
   buildMaquetteFileName,
   compareAspectRatios,
   deriveColorAreaEstimates,
   deriveGridSpec,
   suggestContainersForColors
 } from "@muralist/core";
-import { autoCombineBase, runAutoCombine } from "./autoCombine";
+import {
+  applyValidMixesToCoverage,
+  autoCombineBase,
+  dropRecipesUsingColor,
+  runAutoCombine
+} from "./autoCombine";
 import { useConfirm } from "./ConfirmDialog";
 import { downloadMaquettePdf } from "./maquettePdf";
 import {
@@ -319,11 +323,12 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     }));
     if (mixRecipes.length === 0) return raw;
     try {
-      return applyMixesToCoverage(raw, mixRecipes);
+      // Recipes that reference a color no longer in the paintable palette
+      // (marked as background, or removed by a manual merge) are skipped
+      // individually; the rest still apply.
+      return applyValidMixesToCoverage(raw, mixRecipes);
     } catch {
-      // Mix recipes reference ids that are no longer in the palette (e.g. a
-      // manual merge ran after auto-combine). Fall back to raw coverage —
-      // the next auto-combine pass will re-derive.
+      // Defensive: malformed coverage. The next auto-combine pass re-derives.
       return raw;
     }
   }, [paintablePalette, mixRecipes]);
@@ -909,7 +914,11 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
 
   // Flag/unflag a color as bare-wall background. Excluded from the paint plan
   // and rendered show-through; persisted with the project (see buildEditorSnapshot).
+  // A background color is never a mix partner: marking one after an
+  // Auto-combine drops the recipes that use it (their targets become buy
+  // colors) until the next Auto-combine re-classifies without it.
   function toggleTransparentColor(colorId: string) {
+    const becomesBackground = !transparentColorIds.has(colorId);
     setTransparentColorIds((current) => {
       const next = new Set(current);
       if (next.has(colorId)) {
@@ -919,6 +928,20 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       }
       return next;
     });
+    if (!becomesBackground) return;
+    const dropped = dropRecipesUsingColor(mixRecipes, classifications, colorId);
+    if (dropped.droppedTargetIds.length === 0) return;
+    setMixRecipes(dropped.mixes);
+    setClassifications(dropped.classifications);
+    const hexById = new Map(paletteColors.map((color) => [color.id, color.hex]));
+    const affected = dropped.droppedTargetIds
+      .filter((id) => id !== colorId)
+      .map((id) => hexById.get(id) ?? id);
+    if (affected.length > 0) {
+      setSaveMessage(
+        `${affected.join(", ")} ${affected.length === 1 ? "was" : "were"} mixed with the background color — now buy. Press Auto-combine to re-check.`
+      );
+    }
   }
 
   // Lock/unlock a color so Auto-combine and Merge Selected keep it as its
@@ -1011,7 +1034,8 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     const { palette: rebalanced, classifications: nextClassifications, mixes, absorbedCount } =
       runAutoCombine(base, {
         residualThreshold: proSettings.residualThreshold,
-        mixCoveragePercent: proSettings.mixCoveragePercent
+        mixCoveragePercent: proSettings.mixCoveragePercent,
+        backgroundIds: transparentColorIds
       });
     const retainedIds = new Set(rebalanced.map((color) => color.id));
 

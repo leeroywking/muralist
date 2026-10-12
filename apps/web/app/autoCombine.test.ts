@@ -5,7 +5,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { autoCombineBase, runAutoCombine, type AutoCombineColor } from "./autoCombine.js";
+import {
+  applyValidMixesToCoverage,
+  autoCombineBase,
+  dropRecipesUsingColor,
+  runAutoCombine,
+  type AutoCombineColor
+} from "./autoCombine.js";
 
 const PRESETS = { conservative: 0.02, balanced: 0.04, aggressive: 0.07 };
 
@@ -126,4 +132,105 @@ test("autoCombineBase applies current lock flags onto the snapshot", () => {
 test("without a snapshot Auto-combine starts from the current palette", () => {
   const current = palette();
   assert.deepEqual(autoCombineBase(null, current), current);
+});
+
+// FlowerRepeat analyzer palette (docs/example_art/FlowerRepeat.jpg). At
+// Balanced / mix 0 light yellow #F9D55F is white + dark yellow unless white
+// is marked as background.
+function flowerRepeat(): AutoCombineColor[] {
+  const entries: [string, number][] = [
+    ["#313D52", 26.5],
+    ["#8AC6BE", 10.9],
+    ["#E2BEC1", 9.4],
+    ["#E699A3", 7.6],
+    ["#45B0B3", 7.3],
+    ["#FAFBFB", 4.8],
+    ["#F9D55F", 4.6],
+    ["#F5C233", 4.3],
+    ["#84B73F", 4.2]
+  ];
+  return entries.map(([hex, coverage]) => ({
+    id: hex,
+    rgb: hexToRgb(hex),
+    pixelCount: Math.round(coverage * 10),
+    coveragePercent: coverage
+  }));
+}
+
+test("Auto-combine never mixes with a background color", () => {
+  const withoutBackground = runAutoCombine(flowerRepeat(), { residualThreshold: PRESETS.balanced, mixCoveragePercent: 0 });
+  assert.ok(
+    withoutBackground.mixes.some((mix) => mix.components.some((component) => component.colorId === "#FAFBFB")),
+    "precondition: white is a partner when it is not background"
+  );
+  for (const residualThreshold of Object.values(PRESETS)) {
+    for (const mixCoveragePercent of [0, 5]) {
+      const result = runAutoCombine(flowerRepeat(), {
+        residualThreshold,
+        mixCoveragePercent,
+        backgroundIds: new Set(["#FAFBFB"])
+      });
+      const label = `${residualThreshold} at mix ${mixCoveragePercent}%`;
+      assert.equal(result.classifications["#FAFBFB"], "buy", label);
+      for (const mix of result.mixes) {
+        assert.ok(
+          !mix.components.some((component) => component.colorId === "#FAFBFB"),
+          `${mix.targetColorId} mixes with the background at ${label}`
+        );
+      }
+    }
+  }
+});
+
+test("dropRecipesUsingColor removes recipes that use a new background color and makes their targets buy", () => {
+  const result = runAutoCombine(flowerRepeat(), { residualThreshold: PRESETS.balanced, mixCoveragePercent: 0 });
+  const dropped = dropRecipesUsingColor(result.mixes, result.classifications, "#FAFBFB");
+  assert.ok(dropped.droppedTargetIds.length > 0);
+  for (const mix of dropped.mixes) {
+    assert.ok(!mix.components.some((component) => component.colorId === "#FAFBFB"));
+    assert.notEqual(mix.targetColorId, "#FAFBFB");
+  }
+  for (const id of dropped.droppedTargetIds) assert.equal(dropped.classifications[id], "buy");
+  // Recipes that do not touch the color are kept.
+  const untouched = result.mixes.filter(
+    (mix) =>
+      mix.targetColorId !== "#FAFBFB" &&
+      !mix.components.some((component) => component.colorId === "#FAFBFB")
+  );
+  assert.deepEqual(dropped.mixes, untouched);
+});
+
+test("applyValidMixesToCoverage skips only recipes that reference missing colors", () => {
+  const coverage = [
+    { id: "a", coveragePercent: 40 },
+    { id: "b", coveragePercent: 30 },
+    { id: "ab", coveragePercent: 10 },
+    { id: "lonely", coveragePercent: 5 }
+  ];
+  const good = {
+    targetColorId: "ab",
+    components: [
+      { colorId: "a", fraction: 0.5 },
+      { colorId: "b", fraction: 0.5 }
+    ]
+  };
+  // "wall" is a background color, so it is not in the paintable coverage list.
+  const usesBackground = {
+    targetColorId: "lonely",
+    components: [
+      { colorId: "a", fraction: 0.5 },
+      { colorId: "wall", fraction: 0.5 }
+    ]
+  };
+  const result = applyValidMixesToCoverage(coverage, [good, usesBackground]);
+  assert.deepEqual(result, [
+    { id: "a", coveragePercent: 45 },
+    { id: "b", coveragePercent: 35 },
+    { id: "lonely", coveragePercent: 5 }
+  ]);
+  // A recipe whose target is no longer listed is skipped too.
+  assert.deepEqual(
+    applyValidMixesToCoverage(coverage, [{ ...good, targetColorId: "gone" }]),
+    coverage
+  );
 });

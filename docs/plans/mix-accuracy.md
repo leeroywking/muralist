@@ -105,3 +105,20 @@ Phase-0 near-duplicate dedup is capped at an OKLab distance of 0.05 (2.5 JND). A
 - Merge Selected, Reset to original colors, Full reset, a new upload, and loading a project or restoring saved choices all clear the snapshot. The next Auto-combine then snapshots the edited palette.
 - The snapshot is not persisted. After a save and load, the first Auto-combine starts from the loaded palette, which may already be combined.
 - If nothing combines at the chosen setting, the snapshot palette is shown unchanged.
+
+## Background colors and mixing (2026-10-12)
+
+Bug: a color marked as background (bare wall, no paint) was still available to Auto-combine. It could be a mix partner (FlowerRepeat's light yellow came back as "white + dark yellow" with the white marked as wall), be mixed itself, or be absorbed into another color and lose its background flag. Separately, `adjustedCoverage` in `apps/web/app/PrototypeApp.tsx` passed every recipe to `applyMixesToCoverage` over the paintable palette (background excluded); one recipe using a background color threw, and the catch fell back to raw coverage, silently dropping *all* mixes from the estimate.
+
+Core (`classifyPaletteColors`, new `backgroundIds` option, backward compatible):
+
+- A background color is never a mix partner: no recipe lists it as a component. If it is also locked, background wins.
+- Like a lock, it is always buy (in the classifier's sense) — never a mix target, never absorbed into another color, so it keeps its flag.
+- Its own near-duplicates still fold into it in the Phase 0 dedup (paper grain / wall texture noise collapses into the bare wall), even when the near-duplicate is the larger chip.
+- Sub-1% edge pixels on a line between the background and a paint color still absorb into the nearer endpoint (the anti-aliasing seam), but only when they would be absorbed anyway (coverage below the mix threshold). At mix threshold 0 nothing absorbs, and a wall + paint recipe is not possible, so such a pixel stays buy.
+- A paint color that could only be explained as "X + background" takes the normal no-fit path (buy).
+- Coverage stays whole-image-relative: background pixels still count in the denominator for the dominant, mix-coverage and edge thresholds. That matches the editor (coverage percentages are of the whole image, and the paint plan drops background colors without renormalising), so toggling a background never shifts the other colors across a threshold.
+
+Web: Auto-combine passes the background set (it is keyed by color id, so the pre-combine snapshot path needs nothing extra). Marking a color as background *after* an Auto-combine drops the recipes that use it (or mix it) and makes their targets buy, with a message suggesting another Auto-combine; it does not silently re-run classification, which could change the palette under settings the user has not applied. `applyValidMixesToCoverage` (in `apps/web/app/autoCombine.ts`) skips only recipes whose target or components are not in the paintable palette.
+
+Tests: `packages/core/test/index.test.ts` (background never a partner/target/absorbed across presets, thresholds and dominant settings on the teal, FlowerRepeat and greys palettes, locked or not; FlowerRepeat light yellow not made from background white; near-duplicates fold into the background; edge pixels absorb into it at mix 5% and stay buy at 0%) and `apps/web/app/autoCombine.test.ts` (Auto-combine with background ids, `dropRecipesUsingColor`, `applyValidMixesToCoverage`).
