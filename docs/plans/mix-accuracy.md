@@ -53,3 +53,24 @@ Variant A plus a pigment path using `spectral.js` (MIT, v3.x, the Kubelka–Munk
   - Variant B only: a synthetic pigment-mix gradient (generated with spectral.js) is detected.
 - `npm run typecheck`, `npm run test`, `npm run build`, `npm run lint` from the repo root.
 - PR per variant, CI green, and the Pages preview at `https://leeroywking.github.io/muralist/previews/<slug>/` actually loads. Test plan: upload the octopus / teal-boats / sunset images, press Auto-combine at each sensitivity, and check the recipes.
+
+## Color lock (2026-10-12)
+
+**Why.** Auto-combine folds small detail colors into their neighbors — on the octopus image the light-pink suckers (`#FDB2C0`, ~3.6%) absorb into tan at Balanced. Users asked to "lock colors so they can't be merged or mixed, to preserve small details — lock colors before the auto-merge."
+
+**Origin.** Ported from PR #12 (`feat/unmerge-colors`, commit `aec1f75`), which bundled a per-color Lock with art-tap pull-out. Only the lock was taken: the `locked?: boolean` palette flag and its persistence (`apps/web/app/editorPersistence.ts`, `apps/web/app/apiClient.ts`), the API schema field and its two tests, and the chip Lock toggle + 🔒 badge (restyled to the monochrome tokens). PR #12's classifier change targeted the old RGB classifier, so the core logic was rewritten for the OKLab classifier on this branch. Art-tap, the loupe, the worker, disable, and classify-on-upload were not ported, and the PR stack (#10/#11/#12) was not merged.
+
+**Classifier (`packages/core`, `classifyPaletteColors`).** New optional `lockedIds?: ReadonlySet<string>`; omitted = previous behavior.
+- A locked color is always `buy`: never absorbed, never a mix target, never demoted in the settle pass.
+- Locked colors are seeded into the buy set before the coverage-ordered greedy pass, so they are available as partners regardless of coverage. Unlocked colors may mix with a locked partner (the usual partner-coverage ratio still applies) and may absorb into it.
+- Near-duplicate dedup (Phase 0): a locked color is never the absorbed member. With exactly one locked member of a pair, the unlocked member absorbs into the locked one — unless the unlocked member is dominant (≥ the dominant cutoff), in which case both stay. Two locked colors never merge.
+- Existing invariants hold: absorb and mix targets are always buy colors, no chains.
+
+**Web (`apps/web/app/PrototypeApp.tsx`).**
+- Each chip has a Lock toggle (`aria-pressed`) and a 🔒 badge on the swatch when locked.
+- Auto-combine passes the locked ids to the classifier. Locked flags ride on the palette color, so they survive Auto-combine, Merge Selected (keeper), save/load (account and on-device), and **Reset to original colors** (carried onto the restored colors).
+- **Merge Selected:** a locked chip can be the keeper (it absorbs the others and stays locked), but it cannot be merged away. If a selected non-keeper is locked, the merge is refused with a short message.
+- **Full reset** re-derives the palette from the image pixels and clears all locks (it is a full reset).
+- Known limitation: Auto-combine re-classifies the already-combined palette (separate bug, not fixed here). To lock a color that has already been merged away, press "Reset to original colors" first, lock it, then Auto-combine.
+
+**Persistence.** `paletteColorSchema` gains `locked: z.boolean().optional()`. The schema is a non-strict `z.object`, so before this change a `locked` key was silently stripped on save, not rejected. Unlocked colors omit the key.
