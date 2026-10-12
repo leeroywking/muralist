@@ -489,10 +489,27 @@
   }
 }
 
-/* Site palette — dark mode. All site-chrome colors route through these
-   tokens; artwork colors (swatches, chips, previews) are user data and never
-   use them. The in-page field sheet (.print-summary) stays paper-light. */
-:root {
+/* Site palette. All site-chrome colors route through these tokens; artwork
+   colors (swatches, chips, previews) are user data and never use them. The
+   in-page field sheet (.print-summary) and print output stay paper-light in
+   both themes.
+
+   Theme: data-theme="dark" | "light" on <html>, set before first paint by the
+   inline script in layout.tsx (saved toggle choice, else the visitor's
+   prefers-color-scheme, else dark). Bare :root falls back to dark.
+
+   Accent pairing: one hue (electric teal, ~194deg), tone adjusted per surface
+   for contrast, like Material 3 tonal palettes (lighter tone on dark, darker
+   tone on light):
+   - Dark: bright #4cc9f0 is drawn directly for text, lines and focus (9-10:1
+     on the dark surfaces).
+   - Light: bright #4cc9f0 is only 1.7:1 on #f2f2ee, failing WCAG 1.4.3 (text,
+     4.5:1) and 1.4.11 (non-text, 3:1). Text, lines and focus rings use deep
+     teal #0a6e8a instead (4.8-5.7:1 on every light surface). Bright teal
+     appears only as a fill behind off-black ink (#161616 on #4cc9f0 = 9.4:1),
+     edged in off-black where it meets the light page. */
+:root,
+:root[data-theme="dark"] {
   color-scheme: dark;
 
   /* Neutrals: off-black page, lifted surfaces, off-white ink */
@@ -507,31 +524,46 @@
   --line: rgba(242, 242, 238, 0.12);
   --line-strong: rgba(242, 242, 238, 0.26);
   --shadow: rgba(0, 0, 0, 0.45);
-  --eyebrow: var(--accent-hi);
+  --eyebrow: var(--accent-text);
+  --heading-accent: var(--accent-text);
 
   /* Header band (a step darker than the page) */
   --band: #0e0e0e;
   --on-band: #f2f2ee;
   --on-band-muted: #a8a8a2;
+  --on-band-accent: var(--accent-hi);
+  --band-accent: transparent;
 
   /* Accent: electric teal. ~8-10:1 on these surfaces. Lines, text and
      faint tints only — never a large fill. */
   --accent-hi: #4cc9f0;
-  --accent-hi-hover: #8fdcf5;
+  --accent-text: var(--accent-hi);
+  --accent-text-hover: #8fdcf5;
   --accent-tint: rgba(76, 201, 240, 0.1);
   --accent-tint-strong: rgba(76, 201, 240, 0.18);
+  --accent-fill-ink: #161616;
+  --accent-fill-edge: #161616;
 
   /* Interactive */
   --primary: var(--accent-tint);
   --primary-hover: var(--accent-tint-strong);
   --on-primary: var(--accent-hi);
+  --on-primary-hover: var(--accent-hi);
+  --primary-edge: var(--accent-hi);
+  --primary-hover-ring: transparent;
   --accent-ink: var(--ink);
   --accent-line: rgba(242, 242, 238, 0.4);
   --accent-soft: rgba(242, 242, 238, 0.06);
-  --selected: var(--accent-hi);
-  --focus: var(--accent-hi);
+  --selected: var(--accent-text);
+  --focus: var(--accent-text);
   --badge-bg: #0e0e0e;
   --badge-ink: var(--accent-hi);
+  --badge-edge: var(--accent-hi);
+  --pill-active-bg: var(--accent-tint);
+  --pill-active-ink: var(--accent-hi);
+  --pill-active-edge: var(--accent-hi);
+  --chip-active-bg: var(--accent-tint);
+  --chip-active-ink: var(--accent-hi);
   --neutral-ink: #d6d6d0;
   --neutral-soft: rgba(242, 242, 238, 0.04);
   --disabled-bg: rgba(242, 242, 238, 0.1);
@@ -544,6 +576,65 @@
   --warn-ink: #e8c878;
   --warn-line: rgba(232, 200, 120, 0.4);
   --warn-soft: rgba(232, 200, 120, 0.08);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* Neutrals: off-white surfaces, off-black ink */
+  --bg: #f2f2ee;
+  --bg-accent: #e9e9e4;
+  --surface: #fafaf8;
+  --surface-raised: #fdfdfb;
+  --surface-sunken: #f5f5f2;
+  --ink: #161616;
+  --muted: #5a5a55;
+  --line: rgba(22, 22, 22, 0.14);
+  --line-strong: rgba(22, 22, 22, 0.3);
+  --shadow: rgba(22, 22, 22, 0.06);
+  --eyebrow: var(--muted);
+  --heading-accent: var(--ink);
+
+  /* Off-black header band with a bright-teal rule along its foot */
+  --band: #161616;
+  --on-band: #fafaf8;
+  --on-band-muted: #b4b4ae;
+  --band-accent: var(--accent-hi);
+
+  /* Deep teal for text/lines/focus; bright teal only as a fill. */
+  --accent-text: #0a6e8a;
+  --accent-text-hover: #085a71;
+  --accent-tint: rgba(76, 201, 240, 0.22);
+
+  /* Interactive: primary stays off-black, deep-teal ring on hover */
+  --primary: #161616;
+  --primary-hover: #3a3a37;
+  --on-primary: #fafaf8;
+  --on-primary-hover: #fafaf8;
+  --primary-edge: transparent;
+  --primary-hover-ring: var(--accent-text);
+  --accent-ink: #161616;
+  --accent-line: rgba(22, 22, 22, 0.45);
+  --accent-soft: rgba(22, 22, 22, 0.06);
+  --badge-bg: var(--accent-hi);
+  --badge-ink: var(--accent-fill-ink);
+  --badge-edge: var(--accent-fill-edge);
+  --pill-active-bg: var(--accent-hi);
+  --pill-active-ink: var(--accent-fill-ink);
+  --pill-active-edge: var(--accent-fill-edge);
+  --chip-active-ink: var(--ink);
+  --neutral-ink: #3e3e3a;
+  --neutral-soft: rgba(22, 22, 22, 0.04);
+  --disabled-bg: rgba(22, 22, 22, 0.12);
+  --disabled-ink: rgba(22, 22, 22, 0.5);
+
+  /* Semantic (muted) */
+  --danger: #8c2a22;
+  --danger-line: rgba(140, 42, 34, 0.45);
+  --danger-soft: rgba(140, 42, 34, 0.07);
+  --warn-ink: #5c4410;
+  --warn-line: rgba(140, 104, 24, 0.4);
+  --warn-soft: rgba(176, 132, 32, 0.1);
 }
 
 /* The field sheet is a sheet of paper on screen and in print: light
@@ -1740,15 +1831,17 @@ h1 {
 }
 
 /* ---- Accent (teal) ------------------------------------------------------
-   Everything is dark, so teal is drawn directly: links, eyebrows, key
-   numbers, selected/active states, MIX badge, focus rings, and an outlined
-   teal primary button. The only light surface left is the paper field sheet
-   (.print-summary); teal there is edged in off-black (1.8:1 on white alone). */
+   Drawn through theme tokens (see the palette comment above). Dark: teal is
+   drawn directly — links, eyebrows, key numbers, selected/active states, MIX
+   badge, focus rings, outlined teal primary button. Light: deep teal for
+   text/lines/focus; bright teal only as a fill behind off-black ink, edged in
+   off-black. The paper field sheet (.print-summary) is light in both themes;
+   its focus ring is bright teal edged in off-black (1.8:1 on white alone). */
 a {
-  color: var(--accent-hi);
+  color: var(--accent-text);
 }
 a:hover {
-  color: var(--accent-hi-hover);
+  color: var(--accent-text-hover);
 }
 :focus-visible,
 .swatch-card:has(.swatch-toggle:focus-visible),
@@ -1769,20 +1862,50 @@ a:hover {
 }
 .site-nav a:hover,
 .header-session-link:hover {
-  color: var(--accent-hi);
+  color: var(--on-band-accent);
 }
-.summary-strip strong,
+/* Light mode: a bright-teal rule along the foot of the off-black header,
+   with a 1px off-black edge below it where it meets the light page. */
+.site-header {
+  position: relative;
+}
+.site-header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(-0.85rem + 1px);
+  height: 3px;
+  background: var(--band-accent);
+  /* Full-bleed like the band itself, without adding scroll width. */
+  box-shadow: 0 0 0 100vmax var(--band-accent);
+  clip-path: inset(0 -100vmax);
+  pointer-events: none;
+}
+.summary-strip strong {
+  color: var(--accent-text);
+}
 .about-card h2,
 .signin-heading {
-  color: var(--accent-hi);
+  color: var(--heading-accent);
 }
-/* Primary actions: teal outline + teal text on a faint teal tint. */
+/* Primary actions. Dark: teal outline + teal text on a faint teal tint.
+   Light: off-black fill, off-white text, deep-teal ring on hover. */
 .merge-button,
 .pdf-button,
 .signin-primary,
 .projects-new-button,
 .projects-cta {
-  box-shadow: inset 0 0 0 1.5px var(--accent-hi);
+  box-shadow: inset 0 0 0 1.5px var(--primary-edge);
+}
+.merge-button:hover:not(:disabled),
+.pdf-button:hover:not(:disabled),
+.signin-primary:hover,
+.projects-new-button:hover:not(:disabled),
+.projects-cta:hover {
+  box-shadow:
+    inset 0 0 0 1.5px var(--primary-edge),
+    0 0 0 2px var(--primary-hover-ring);
 }
 .merge-button:disabled,
 .pdf-button:disabled,
@@ -1791,15 +1914,15 @@ a:hover {
 }
 .signin-primary:hover,
 .projects-cta:hover {
-  color: var(--accent-hi);
+  color: var(--on-primary-hover);
 }
 .swatch-card-selected,
 .keeper-chip {
-  border-color: var(--accent-hi);
-  box-shadow: inset 0 0 0 1px var(--accent-hi);
+  border-color: var(--selected);
+  box-shadow: inset 0 0 0 1px var(--selected);
 }
-/* Swatch blocks are artwork colors; a hairline keeps near-black ones
-   distinct from the dark card. */
+/* Swatch blocks are artwork colors; a hairline keeps near-black (dark) or
+   near-white (light) ones distinct from the card. */
 .swatch {
   box-shadow: inset 0 0 0 1px var(--line-strong);
 }
@@ -1807,19 +1930,59 @@ a:hover {
   border-color: var(--line-strong);
 }
 .swatch-card-mix::after {
-  border: 1px solid var(--accent-hi);
+  border: 1px solid var(--badge-edge);
 }
 .mix-badge {
-  color: var(--accent-hi);
+  color: var(--accent-text);
 }
-.sensitivity-preset.is-active,
+.sensitivity-preset.is-active {
+  background: var(--pill-active-bg);
+  color: var(--pill-active-ink);
+  border-color: var(--pill-active-edge);
+  box-shadow: inset 0 0 0 1px var(--pill-active-edge);
+}
 .projects-status-tab.is-active {
-  color: var(--accent-hi);
-  border-color: var(--accent-hi);
-  box-shadow: inset 0 0 0 1px var(--accent-hi);
+  color: var(--on-primary);
+  box-shadow: inset 0 0 0 1px var(--primary-edge);
 }
 .background-toggle.is-active {
-  border-color: var(--accent-hi);
-  background: var(--accent-tint);
-  color: var(--accent-hi);
+  border-color: var(--selected);
+  background: var(--chip-active-bg);
+  color: var(--chip-active-ink);
+}
+
+/* ---- Theme toggle (site header) ----------------------------------------- */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--on-band-muted);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--on-band);
+  cursor: pointer;
+}
+.theme-toggle:hover {
+  color: var(--on-band-accent);
+  border-color: var(--on-band-accent);
+}
+.theme-toggle svg {
+  width: 1rem;
+  height: 1rem;
+}
+.site-header .theme-toggle:focus-visible {
+  outline: 2px solid var(--on-band-accent);
+  outline-offset: 2px;
+}
+/* Glyph follows <html data-theme>: moon in dark, sun in light. */
+.theme-toggle-sun,
+:root[data-theme="light"] .theme-toggle-moon {
+  display: none;
+}
+:root[data-theme="light"] .theme-toggle-sun {
+  display: block;
 }
