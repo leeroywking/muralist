@@ -1191,3 +1191,9 @@ export function applyMixesToCoverage(
 function round4(value: number): number {
   return Math.round(value * 10000) / 10000;
 }
+
+// Browser-independent image analysis (ICC, downscale, survey, flatten).
+export * from "./icc.js";
+export * from "./raster.js";
+export * from "./palette.js";
+export * from "./analysisPipeline.js";
