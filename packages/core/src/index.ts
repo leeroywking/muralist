@@ -134,6 +134,15 @@ export type ClassifyPaletteOptions = {
   /** Colors covering at least this percent of the image (after near-duplicate
    * merging) are always buy — never a mix or absorb target. Default 15. */
   dominantCoveragePercent?: number;
+  /** Ids of colors the user has locked to preserve small details. A locked
+   * color is always buy: it is never absorbed (Phase 0 near-duplicate merge
+   * included), never a mix target, and joins the buy set up front regardless
+   * of coverage. Unlocked colors may still absorb into a locked color and may
+   * use it as a mix partner (the usual partner-coverage rule applies). In a
+   * near-duplicate pair with one locked member the unlocked member absorbs
+   * into the locked one unless it is dominant (then both stay); two locked
+   * colors never merge. Omitted or empty = no locks. */
+  lockedIds?: ReadonlySet<string>;
 };
 
 export const DEFAULT_DOMINANT_COVERAGE_PERCENT = 15;
@@ -478,10 +487,12 @@ export function classifyPaletteColors(
   // merged — the lower-coverage member absorbs into the higher-coverage
   // one, silently (no mix recipe). Survivor pixel counts include the
   // pixels they absorbed. A dominant color is never the absorbed member.
+  const isLockedId = (id: string) => options.lockedIds?.has(id) ?? false;
   const dedupResult = dedupNearestNeighbors(
     colors,
     options.residualThreshold,
-    (dominantCoveragePercent / 100) * totalPixels
+    (dominantCoveragePercent / 100) * totalPixels,
+    isLockedId
   );
   const survivors = dedupResult.survivors;
   const dedupAbsorbs = dedupResult.absorbs; // id -> keeperId
@@ -496,7 +507,7 @@ export function classifyPaletteColors(
   // is how a rarely used indigo ended up as a partner over a closer, more
   // common color. In the greedy pass below this holds automatically (every
   // earlier buy has at least as many pixels); the explicit filter keeps the
-  // settle pass to the same rule.
+  // settle pass and seeded locked colors to the same rule.
   const ordered = [...survivors].sort(
     (left, right) => right.pixelCount - left.pixelCount || left.id.localeCompare(right.id)
   );
@@ -521,7 +532,14 @@ export function classifyPaletteColors(
   // "is it bracketed by any two others?" test let two colors disqualify each
   // other and fell back to white + black for anything between them.
   // Dominant colors (>= dominantCoveragePercent of the image) always buy.
+  // Locked colors are seeded into the buy set before the greedy pass so a
+  // small locked accent is already available as a partner when larger
+  // colors are tested (subject to the partner-coverage rule above).
   for (const color of ordered) {
+    if (isLockedId(color.id)) buyIds.add(color.id);
+  }
+  for (const color of ordered) {
+    if (buyIds.has(color.id)) continue;
     if (isDominant(color) || !fitFromBuys(color)) {
       buyIds.add(color.id);
     }
@@ -538,7 +556,7 @@ export function classifyPaletteColors(
     let changed = false;
     const ascendingBuys = ordered.filter((entry) => buyIds.has(entry.id)).reverse();
     for (const color of ascendingBuys) {
-      if (isDominant(color)) continue;
+      if (isDominant(color) || isLockedId(color.id)) continue;
       if (fitFromBuys(color)) {
         buyIds.delete(color.id);
         changed = true;
@@ -644,7 +662,8 @@ export function classifyPaletteColors(
 function dedupNearestNeighbors(
   colors: ClassifyPaletteInput[],
   threshold: number,
-  dominantPixelCount: number
+  dominantPixelCount: number,
+  isLocked: (id: string) => boolean
 ): { survivors: ClassifyPaletteInput[]; absorbs: Map<string, string> } {
   const survivors: ClassifyPaletteInput[] = colors.map((color) => ({ ...color }));
   const absorbs = new Map<string, string>();
@@ -653,7 +672,10 @@ function dedupNearestNeighbors(
   const labById = new Map(colors.map((color) => [color.id, rgbToOklab(color.rgb)]));
 
   // Repeated nearest-pair merge. Each pass picks the tightest pair; the
-  // lower-pixelCount member absorbs into the higher-pixelCount one. Bounded
+  // lower-pixelCount member absorbs into the higher-pixelCount one. A locked
+  // member is never the absorbed one: with exactly one locked member the
+  // other absorbs into it (unless that other is dominant), and two locked
+  // colors are never merged. Bounded
   // by colors.length iterations so worst-case is O(N^3) — fine for palettes
   // under ~100 colors.
   while (survivors.length > 1) {
@@ -667,17 +689,25 @@ function dedupNearestNeighbors(
         const b = survivors[j]!;
         const distance = oklabDistance(labById.get(a.id)!, labById.get(b.id)!);
         if (distance >= threshold) continue;
-        // The absorbed member is the smaller one, so if it is dominant both
-        // are, and two dominant colors both stay.
-        if (Math.min(a.pixelCount, b.pixelCount) >= dominantPixelCount) continue;
+        const aLocked = isLocked(a.id);
+        const bLocked = isLocked(b.id);
+        if (aLocked && bLocked) continue;
+        // Keeper = the locked member if there is one; otherwise the one with
+        // more pixels, or lexicographically smaller id on ties for
+        // deterministic test output.
+        const aKeeps = aLocked
+          ? true
+          : bLocked
+            ? false
+            : a.pixelCount > b.pixelCount ||
+              (a.pixelCount === b.pixelCount && a.id.localeCompare(b.id) <= 0);
+        // A dominant color is never the absorbed member. Without locks the
+        // absorbed member is the smaller one, so if it is dominant both are,
+        // and two dominant colors both stay.
+        if ((aKeeps ? b : a).pixelCount >= dominantPixelCount) continue;
         if (distance < bestDistance) {
           bestDistance = distance;
-          // Keeper = the one with more pixels, or lexicographically smaller
-          // id on ties for deterministic test output.
-          if (
-            a.pixelCount > b.pixelCount ||
-            (a.pixelCount === b.pixelCount && a.id.localeCompare(b.id) <= 0)
-          ) {
+          if (aKeeps) {
             keeperIndex = i;
             absorbedIndex = j;
           } else {

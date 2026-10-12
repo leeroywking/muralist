@@ -1118,3 +1118,189 @@ test("classifyPaletteColors recovers every CSV fixture gradient step from its en
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// Color lock (lockedIds): a locked color is always buy; unlocked colors may
+// still absorb into it or mix with it as a partner.
+// ---------------------------------------------------------------------------
+
+const LOCK_CLUSTERS: ClassifyPaletteInput[] = [
+  { id: "red-main", rgb: [210, 40, 40], pixelCount: 100 },
+  { id: "red-near", rgb: [214, 44, 43], pixelCount: 20 },
+  { id: "blue-main", rgb: [40, 40, 210], pixelCount: 90 },
+  { id: "blue-near", rgb: [36, 43, 213], pixelCount: 15 },
+  { id: "mid", rgb: [125, 40, 125], pixelCount: 8 }
+];
+
+test("classifyPaletteColors keeps a small locked color as buy at every preset", () => {
+  // Unlocked, "red-near" is a near-duplicate that folds into "red-main" and
+  // "mid" (3.4%) sits on the red-blue line. Locked, both stay buy.
+  for (const residualThreshold of OKLAB_PRESETS) {
+    const baseline = new Map(
+      classifyPaletteColors(LOCK_CLUSTERS, { residualThreshold, mixCoveragePercent: 5 }).map(
+        (entry) => [entry.id, entry]
+      )
+    );
+    assert.equal(baseline.get("red-near")?.classification, "absorb", `baseline at ${residualThreshold}`);
+    assert.notEqual(baseline.get("mid")?.classification, "buy", `baseline at ${residualThreshold}`);
+
+    for (const mixCoveragePercent of [0, 5]) {
+      const classifications = classifyPaletteColors(LOCK_CLUSTERS, {
+        residualThreshold,
+        mixCoveragePercent,
+        lockedIds: new Set(["red-near", "mid"])
+      });
+      const byId = new Map(classifications.map((entry) => [entry.id, entry]));
+      const label = `threshold ${residualThreshold}, mix ${mixCoveragePercent}%`;
+      assert.equal(byId.get("red-near")?.classification, "buy", label);
+      assert.equal(byId.get("mid")?.classification, "buy", label);
+      assertCoherent(classifications);
+    }
+  }
+});
+
+test("classifyPaletteColors never makes a locked color a mix target", () => {
+  // With the dominant rule relaxed "mid" is a perfect red-blue mix; locking
+  // it keeps it buy and no recipe targets it.
+  const colors: ClassifyPaletteInput[] = [
+    { id: "red", rgb: [220, 20, 20], pixelCount: 300 },
+    { id: "blue", rgb: [20, 20, 220], pixelCount: 300 },
+    { id: "mid", rgb: [120, 20, 120], pixelCount: 200 }
+  ];
+  const options = { residualThreshold: 0.04, mixCoveragePercent: 5, dominantCoveragePercent: 50 };
+  const unlocked = classifyPaletteColors(colors, options);
+  assert.equal(unlocked.find((entry) => entry.id === "mid")?.classification, "mix");
+
+  const locked = classifyPaletteColors(colors, { ...options, lockedIds: new Set(["mid"]) });
+  const mid = locked.find((entry) => entry.id === "mid")!;
+  assert.equal(mid.classification, "buy");
+  assert.equal(mid.recipe, undefined);
+  assert.ok(locked.every((entry) => entry.recipe?.targetColorId !== "mid"));
+  assertCoherent(locked);
+});
+
+test("classifyPaletteColors keeps the locked member of a near-duplicate pair even when it is smaller", () => {
+  // "red-near" (20 px) is a near-duplicate of "red-main" (100 px). Locked, it
+  // is the keeper: a non-dominant "red-main" absorbs into it; a dominant
+  // "red-main" is never absorbed, so both stay buy.
+  const lockedIds = new Set(["red-near"]);
+  for (const residualThreshold of OKLAB_PRESETS) {
+    const relaxed = classifyPaletteColors(LOCK_CLUSTERS, {
+      residualThreshold,
+      mixCoveragePercent: 5,
+      dominantCoveragePercent: 100,
+      lockedIds
+    });
+    const relaxedById = new Map(relaxed.map((entry) => [entry.id, entry]));
+    assert.equal(relaxedById.get("red-near")?.classification, "buy", `${residualThreshold}`);
+    assert.equal(relaxedById.get("red-main")?.classification, "absorb", `${residualThreshold}`);
+    assert.equal(relaxedById.get("red-main")?.absorbedIntoId, "red-near", `${residualThreshold}`);
+    assertCoherent(relaxed);
+    const applied = applyClassification(LOCK_CLUSTERS, relaxed);
+    assert.equal(applied.nextColors.find((entry) => entry.id === "red-near")?.pixelCount, 120);
+
+    // Default dominant cutoff: red-main covers 43%, so it stays too.
+    const strict = classifyPaletteColors(LOCK_CLUSTERS, {
+      residualThreshold,
+      mixCoveragePercent: 5,
+      lockedIds
+    });
+    const strictById = new Map(strict.map((entry) => [entry.id, entry]));
+    assert.equal(strictById.get("red-near")?.classification, "buy", `${residualThreshold}`);
+    assert.equal(strictById.get("red-main")?.classification, "buy", `${residualThreshold}`);
+    assertCoherent(strict);
+  }
+
+  // Two locked near-duplicates never merge with each other.
+  const both = classifyPaletteColors(LOCK_CLUSTERS, {
+    residualThreshold: 0.07,
+    mixCoveragePercent: 5,
+    dominantCoveragePercent: 100,
+    lockedIds: new Set(["red-near", "red-main"])
+  });
+  const bothById = new Map(both.map((entry) => [entry.id, entry]));
+  assert.equal(bothById.get("red-near")?.classification, "buy");
+  assert.equal(bothById.get("red-main")?.classification, "buy");
+  assertCoherent(both);
+});
+
+test("classifyPaletteColors lets unlocked colors mix with a locked partner", () => {
+  // "blue-lock" is a near-duplicate of the larger "blue". Unlocked it folds
+  // into "blue" and "mid" mixes red + blue; locked, "blue" folds into it and
+  // "mid" (the sRGB midpoint of red and blue-lock) mixes red + blue-lock.
+  const colors: ClassifyPaletteInput[] = [
+    { id: "red", rgb: [220, 20, 20], pixelCount: 300 },
+    { id: "blue", rgb: [20, 20, 220], pixelCount: 40 },
+    { id: "blue-lock", rgb: [24, 22, 214], pixelCount: 25 },
+    { id: "mid", rgb: [122, 21, 117], pixelCount: 15 }
+  ];
+  const options = { residualThreshold: 0.04, mixCoveragePercent: 0 };
+  const partnersOf = (classifications: ReturnType<typeof classifyPaletteColors>) =>
+    classifications
+      .find((entry) => entry.id === "mid")!
+      .recipe!.components.map((component) => component.colorId)
+      .sort();
+
+  const unlocked = classifyPaletteColors(colors, options);
+  assert.deepEqual(partnersOf(unlocked), ["blue", "red"]);
+
+  const locked = classifyPaletteColors(colors, { ...options, lockedIds: new Set(["blue-lock"]) });
+  const byId = new Map(locked.map((entry) => [entry.id, entry]));
+  assert.equal(byId.get("blue-lock")?.classification, "buy");
+  assert.equal(byId.get("blue")?.absorbedIntoId, "blue-lock");
+  assert.equal(byId.get("mid")?.classification, "mix");
+  assert.deepEqual(partnersOf(locked), ["blue-lock", "red"]);
+  assertCoherent(locked);
+});
+
+test("classifyPaletteColors keeps absorb/mix targets on buy colors with locks across presets and palettes", () => {
+  const palettes: Record<string, ClassifyPaletteInput[]> = {
+    teal: paletteFromHexCoverage([
+      ["#FFFFFF", 50.7],
+      ["#92D8D7", 21.4],
+      ["#038D8C", 8.9],
+      ["#390E5D", 6.9],
+      ["#FAD678", 6.0],
+      ["#020F1A", 3.3],
+      ["#3BB5B2", 2.7],
+      ["#C1A76C", 0.1]
+    ]),
+    greige: paletteFromHexCoverage([
+      ["#F2EFEA", 30],
+      ["#3A3836", 20],
+      ["#97938E", 18],
+      ["#C4C0BA", 9],
+      ["#6B6865", 8],
+      ["#9C9893", 6],
+      ["#5E5C5A", 3]
+    ]),
+    clusters: LOCK_CLUSTERS,
+    gradients: gradientPalette(loadGradientFixtures().slice(0, 4))
+  };
+  for (const [name, colors] of Object.entries(palettes)) {
+    const bySize = [...colors].sort((left, right) => left.pixelCount - right.pixelCount);
+    const lockSets = [
+      new Set(bySize.slice(0, 2).map((color) => color.id)),
+      new Set(bySize.filter((_, index) => index % 2 === 1).map((color) => color.id)),
+      new Set(colors.map((color) => color.id))
+    ];
+    for (const lockedIds of lockSets) {
+      for (const residualThreshold of OKLAB_PRESETS) {
+        for (const dominantCoveragePercent of [15, 100]) {
+          const classifications = classifyPaletteColors(colors, {
+            residualThreshold,
+            mixCoveragePercent: 5,
+            dominantCoveragePercent,
+            lockedIds
+          });
+          const label = `${name} at ${residualThreshold}, dominant ${dominantCoveragePercent}%`;
+          for (const entry of classifications) {
+            if (lockedIds.has(entry.id)) assert.equal(entry.classification, "buy", `${entry.id} in ${label}`);
+          }
+          assertCoherent(classifications);
+          assert.doesNotThrow(() => applyClassification(colors, classifications));
+        }
+      }
+    }
+  }
+});
