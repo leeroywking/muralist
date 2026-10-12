@@ -453,19 +453,41 @@ test("classifyPaletteColors collapses an even red-blue gradient to its two endpo
 
   const classifications = classifyPaletteColors(colors, {
     residualThreshold: 0.04,
-    mixCoveragePercent: 50
+    mixCoveragePercent: 5
   });
 
   const buyIds = classifications.filter((entry) => entry.classification === "buy").map((entry) => entry.id);
-  const absorbIds = classifications.filter((entry) => entry.classification === "absorb").map((entry) => entry.id);
+  const mixIds = classifications.filter((entry) => entry.classification === "mix").map((entry) => entry.id);
 
-  // Endpoints survive as buy, every middle step dissolves. Each step is 10% of
-  // coverage, so mixCoveragePercent of 50 pushes every gradient middle to
-  // absorb rather than mix.
+  // Endpoints survive as buy, every middle step (10% each, above the 5% mix
+  // cutoff) becomes a red + blue recipe.
   assert.equal(buyIds.length, 2);
   assert.ok(buyIds.includes("step-0"));
   assert.ok(buyIds.includes(`step-${steps - 1}`));
-  assert.equal(absorbIds.length, steps - 2);
+  assert.equal(mixIds.length, steps - 2);
+
+  // With mixCoveragePercent 50 every middle step is below the mix cutoff.
+  // Before the absorb distance limit all of them folded into the nearer
+  // endpoint (a mid purple painted red); now a step absorbs only into a buy
+  // color within 2x the threshold of it, and steps that look like neither
+  // end are kept as buy colors.
+  const absorbRun = classifyPaletteColors(colors, {
+    residualThreshold: 0.04,
+    mixCoveragePercent: 50
+  });
+  const labById = new Map(colors.map((color) => [color.id, rgbToOklab(color.rgb)]));
+  const absorbBuyIds = new Set(
+    absorbRun.filter((entry) => entry.classification === "buy").map((entry) => entry.id)
+  );
+  assert.ok(absorbBuyIds.has("step-0") && absorbBuyIds.has(`step-${steps - 1}`));
+  assert.ok(absorbBuyIds.size > 2 && absorbBuyIds.size < steps);
+  for (const entry of absorbRun) {
+    if (entry.classification !== "absorb") continue;
+    const [L1, a1, b1] = labById.get(entry.id)!;
+    const [L2, a2, b2] = labById.get(entry.absorbedIntoId!)!;
+    assert.ok(Math.hypot(L1 - L2, a1 - a2, b1 - b2) <= 0.08 + 1e-9, `${entry.id} absorbed too far`);
+  }
+  assertCoherent(absorbRun);
 });
 
 test("classifyPaletteColors keeps a dominant mid-gradient color as a mix with a 50/50 recipe", () => {
@@ -1134,7 +1156,8 @@ const LOCK_CLUSTERS: ClassifyPaletteInput[] = [
 
 test("classifyPaletteColors keeps a small locked color as buy at every preset", () => {
   // Unlocked, "red-near" is a near-duplicate that folds into "red-main" and
-  // "mid" (3.4%) sits on the red-blue line. Locked, both stay buy.
+  // "mid" (3.4%) sits on the red-blue line (a mix at a 0% mix cutoff).
+  // Locked, both stay buy.
   for (const residualThreshold of OKLAB_PRESETS) {
     const baseline = new Map(
       classifyPaletteColors(LOCK_CLUSTERS, { residualThreshold, mixCoveragePercent: 5 }).map(
@@ -1142,7 +1165,15 @@ test("classifyPaletteColors keeps a small locked color as buy at every preset", 
       )
     );
     assert.equal(baseline.get("red-near")?.classification, "absorb", `baseline at ${residualThreshold}`);
-    assert.notEqual(baseline.get("mid")?.classification, "buy", `baseline at ${residualThreshold}`);
+    // "mid" is a purple far from both red and blue, so below the mix cutoff
+    // it is no longer absorbed (absorb distance limit); with a 0% mix cutoff
+    // it is a red + blue mix unless locked.
+    const mixBaseline = classifyPaletteColors(LOCK_CLUSTERS, { residualThreshold, mixCoveragePercent: 0 });
+    assert.equal(
+      mixBaseline.find((entry) => entry.id === "mid")?.classification,
+      "mix",
+      `baseline at ${residualThreshold}`
+    );
 
     for (const mixCoveragePercent of [0, 5]) {
       const classifications = classifyPaletteColors(LOCK_CLUSTERS, {
@@ -1302,5 +1333,268 @@ test("classifyPaletteColors keeps absorb/mix targets on buy colors with locks ac
         }
       }
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Paint plausibility: a mix recipe must be something a painter could make.
+// Mixing never raises chroma, never leaves the partners' value range, and
+// keeps hue on the arc between the partners (tints/shades keep their hue;
+// complements dull toward grey).
+// ---------------------------------------------------------------------------
+
+function oklch(hex: string): { L: number; C: number; h: number } {
+  const [L, a, b] = rgbToOklab(hexToRgb(hex));
+  const h = (Math.atan2(b, a) * 180) / Math.PI;
+  return { L, C: Math.hypot(a, b), h: h < 0 ? h + 360 : h };
+}
+
+// Real FlowerRepeat analyzer palette (docs/example_art/FlowerRepeat.jpg, live
+// Variant A preview), top colors with their reported coverage.
+const FLOWER_REPEAT = paletteFromHexCoverage([
+  ["#313D52", 26.5], // navy
+  ["#8AC6BE", 10.9], // mint
+  ["#E2BEC1", 9.4],
+  ["#E699A3", 7.6], // pink
+  ["#45B0B3", 7.3],
+  ["#FAFBFB", 4.8], // white
+  ["#F9D55F", 4.6], // light yellow
+  ["#F5C233", 4.3], // dark yellow
+  ["#84B73F", 4.2] // green
+]);
+
+test("classifyPaletteColors never makes FlowerRepeat's dark yellow from light yellow + navy", () => {
+  // Balanced, mix threshold 0 used to return #F5C233 = 7% #313D52 + 93%
+  // #F9D55F: a more saturated yellow from a duller yellow and a navy.
+  for (const residualThreshold of OKLAB_PRESETS) {
+    for (const mixCoveragePercent of [0, 5]) {
+      const classifications = classifyPaletteColors(FLOWER_REPEAT, {
+        residualThreshold,
+        mixCoveragePercent
+      });
+      const label = `threshold ${residualThreshold}, mix ${mixCoveragePercent}%`;
+      const darkYellow = classifications.find((entry) => entry.id === "#F5C233")!;
+      if (darkYellow.classification === "mix") {
+        const partners = darkYellow.recipe!.components.map((component) => component.colorId);
+        assert.ok(!partners.includes("#313D52"), `dark yellow mixes with navy at ${label}`);
+      }
+      assertCoherent(classifications);
+      assertPlausibleRecipes(FLOWER_REPEAT, classifications, label);
+    }
+  }
+
+  // With white present, light yellow is the tint (white + dark yellow), or
+  // stays buy; dark yellow is the paint to buy.
+  const balanced = classifyPaletteColors(FLOWER_REPEAT, {
+    residualThreshold: 0.04,
+    mixCoveragePercent: 0
+  });
+  const byId = new Map(balanced.map((entry) => [entry.id, entry]));
+  assert.equal(byId.get("#F5C233")?.classification, "buy");
+  const lightYellow = byId.get("#F9D55F")!;
+  if (lightYellow.classification === "mix") {
+    assert.deepEqual(
+      lightYellow.recipe!.components.map((component) => component.colorId).sort(),
+      ["#F5C233", "#FAFBFB"]
+    );
+  } else {
+    assert.equal(lightYellow.classification, "buy");
+  }
+});
+
+// Every mix recipe passes the same plausibility rules, measured independently
+// of the classifier: chroma ceiling, value bracket, and no chromatic target
+// from two neutral partners.
+function assertPlausibleRecipes(
+  colors: ClassifyPaletteInput[],
+  classifications: ReturnType<typeof classifyPaletteColors>,
+  label: string
+) {
+  const hexById = new Map(
+    colors.map((color) => [
+      color.id,
+      `#${color.rgb.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`
+    ])
+  );
+  for (const entry of classifications) {
+    if (entry.classification !== "mix") continue;
+    const target = oklch(hexById.get(entry.id)!);
+    const [first, second] = entry.recipe!.components.map((component) =>
+      oklch(hexById.get(component.colorId)!)
+    );
+    const context = `${entry.id} = ${entry.recipe!.components
+      .map((component) => `${component.fraction} ${component.colorId}`)
+      .join(" + ")} at ${label}`;
+    assert.ok(target.C <= Math.max(first!.C, second!.C) + 0.015, `chroma rises: ${context}`);
+    assert.ok(target.L <= Math.max(first!.L, second!.L) + 0.07, `brighter than both: ${context}`);
+    assert.ok(target.L >= Math.min(first!.L, second!.L) - 0.07, `darker than both: ${context}`);
+    if (target.C > 0.04) {
+      assert.ok(first!.C > 0.025 || second!.C > 0.025, `chromatic from two neutrals: ${context}`);
+    }
+  }
+}
+
+test("classifyPaletteColors recipes stay paint-plausible on the fixture palettes", () => {
+  const palettes: Record<string, ClassifyPaletteInput[]> = {
+    teal: paletteFromHexCoverage([
+      ["#FFFFFF", 50.7],
+      ["#92D8D7", 21.4],
+      ["#038D8C", 8.9],
+      ["#390E5D", 6.9],
+      ["#FAD678", 6.0],
+      ["#020F1A", 3.3],
+      ["#3BB5B2", 2.7],
+      ["#C1A76C", 0.1]
+    ]),
+    greige: paletteFromHexCoverage([
+      ["#F2EFEA", 30],
+      ["#3A3836", 20],
+      ["#97938E", 18],
+      ["#C4C0BA", 9],
+      ["#6B6865", 8],
+      ["#9C9893", 6],
+      ["#5E5C5A", 3]
+    ]),
+    flowerRepeat: FLOWER_REPEAT,
+    gradients: gradientPalette(loadGradientFixtures())
+  };
+  for (const [name, colors] of Object.entries(palettes)) {
+    for (const residualThreshold of OKLAB_PRESETS) {
+      for (const dominantCoveragePercent of [15, 100]) {
+        const label = `${name} at ${residualThreshold}, dominant ${dominantCoveragePercent}%`;
+        const classifications = classifyPaletteColors(colors, {
+          residualThreshold,
+          mixCoveragePercent: 0,
+          dominantCoveragePercent
+        });
+        assertCoherent(classifications);
+        assertPlausibleRecipes(colors, classifications, label);
+      }
+    }
+  }
+});
+
+test("classifyPaletteColors rejects a near-white tint of a hue the partner does not have", () => {
+  // Pale pink #FCDCEA (C 0.040, h 350) sits 0.060 from the sRGB line
+  // white -> teal, inside the aggressive threshold, only because pale colors
+  // are all close together; a tint keeps its partner's hue (teal is h ~205),
+  // so it must not be made from white + teal.
+  const colors: ClassifyPaletteInput[] = [
+    { id: "white", rgb: [252, 252, 252], pixelCount: 500 },
+    { id: "teal", rgb: [24, 141, 155], pixelCount: 300 },
+    { id: "blush", rgb: [252, 220, 234], pixelCount: 60 }
+  ];
+  const classifications = classifyPaletteColors(colors, {
+    residualThreshold: 0.07,
+    mixCoveragePercent: 0
+  });
+  assert.equal(classifications.find((entry) => entry.id === "blush")?.classification, "buy");
+});
+
+// ---------------------------------------------------------------------------
+// Distinct small colors: a small color is only absorbed into a buy color it
+// actually resembles; sub-floor anti-aliasing edges still absorb.
+// ---------------------------------------------------------------------------
+
+// Octopus analyzer palette (feedback/IMG_3043.jpg), top colors.
+const OCTOPUS = paletteFromHexCoverage([
+  ["#DA7183", 28.1], // body pink
+  ["#76C6E9", 21.8], // sky blue
+  ["#C9A892", 8.8], // tan
+  ["#FCFCFC", 6.2], // white
+  ["#0A1E64", 5.4], // navy
+  ["#FDB2C0", 3.6], // light-pink suckers
+  ["#188D9B", 2.9],
+  ["#83263E", 2.9]
+]);
+
+test("classifyPaletteColors keeps the octopus's light-pink suckers at Balanced", () => {
+  const classifications = classifyPaletteColors(OCTOPUS, {
+    residualThreshold: 0.04,
+    mixCoveragePercent: 5
+  });
+  const suckers = classifications.find((entry) => entry.id === "#FDB2C0")!;
+  assert.equal(suckers.classification, "buy", `suckers absorbed into ${suckers.absorbedIntoId}`);
+  assertCoherent(classifications);
+});
+
+test("classifyPaletteColors never absorbs a small color into a buy color it does not resemble", () => {
+  for (const residualThreshold of OKLAB_PRESETS) {
+    for (const [name, colors] of Object.entries({ OCTOPUS, FLOWER_REPEAT })) {
+      const classifications = classifyPaletteColors(colors, {
+        residualThreshold,
+        mixCoveragePercent: 5
+      });
+      const totalPixels = colors.reduce((sum, color) => sum + color.pixelCount, 0);
+      const byId = new Map(colors.map((color) => [color.id, color]));
+      for (const entry of classifications) {
+        if (entry.classification !== "absorb") continue;
+        const color = byId.get(entry.id)!;
+        // Below 1% coverage, line-fitting colors are edge clutter and absorb.
+        if ((color.pixelCount / totalPixels) * 100 < 1) continue;
+        const [L1, a1, b1] = rgbToOklab(color.rgb);
+        const [L2, a2, b2] = rgbToOklab(byId.get(entry.absorbedIntoId!)!.rgb);
+        const distance = Math.hypot(L1 - L2, a1 - a2, b1 - b2);
+        assert.ok(
+          distance <= residualThreshold * 2 + 1e-9,
+          `${name}: ${entry.id} absorbed into ${entry.absorbedIntoId} ${distance.toFixed(3)} away at ${residualThreshold}`
+        );
+      }
+    }
+  }
+});
+
+test("classifyPaletteColors still absorbs tiny anti-aliasing colors between two flats", () => {
+  // Two flat areas and the edge pixels between them: sRGB 25/50/75% blends
+  // at 0.2% coverage each. They fit the line and are far from both flats,
+  // but they are edge clutter, so they absorb at every preset.
+  const flatA: [number, number, number] = [218, 113, 131];
+  const flatB: [number, number, number] = [118, 198, 233];
+  const colors: ClassifyPaletteInput[] = [
+    { id: "flat-a", rgb: flatA, pixelCount: 5000 },
+    { id: "flat-b", rgb: flatB, pixelCount: 4940 }
+  ];
+  for (const t of [0.25, 0.5, 0.75]) {
+    colors.push({
+      id: `edge-${t}`,
+      rgb: flatA.map((channel, index) => Math.round(channel + (flatB[index]! - channel) * t)) as [
+        number,
+        number,
+        number
+      ],
+      pixelCount: 20
+    });
+  }
+  for (const residualThreshold of OKLAB_PRESETS) {
+    const classifications = classifyPaletteColors(colors, {
+      residualThreshold,
+      mixCoveragePercent: 5
+    });
+    for (const entry of classifications.filter((item) => item.id.startsWith("edge-"))) {
+      assert.equal(entry.classification, "absorb", `${entry.id} at ${residualThreshold}`);
+    }
+  }
+});
+
+test("classifyPaletteColors keeps Coral's flat red at Aggressive", () => {
+  // Coral analyzer palette (docs/example_art/Coral.jpg). The flat red
+  // #D93A48 is 0.065 from the magenta #DA246D — visibly a different red —
+  // and the aggressive preset used to merge it away as a near-duplicate.
+  const coral = paletteFromHexCoverage([
+    ["#913178", 21.9],
+    ["#7ABD53", 17.9],
+    ["#DA246D", 14.8],
+    ["#EDA93C", 12.8],
+    ["#FEFFFE", 11],
+    ["#77B4CD", 9.6],
+    ["#D93A48", 6.3]
+  ]);
+  for (const residualThreshold of OKLAB_PRESETS) {
+    const classifications = classifyPaletteColors(coral, {
+      residualThreshold,
+      mixCoveragePercent: 5
+    });
+    const red = classifications.find((entry) => entry.id === "#D93A48")!;
+    assert.notEqual(red.classification, "absorb", `red absorbed into ${red.absorbedIntoId} at ${residualThreshold}`);
   }
 });

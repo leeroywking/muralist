@@ -129,7 +129,10 @@ export type ClassifyPaletteOptions = {
    * higher = more aggressive, collapses more onto mixing lines. */
   residualThreshold: number;
   /** Coverage percent threshold that splits mix (kept with recipe, >= threshold)
-   * from absorb (silently folded into nearest endpoint, < threshold). */
+   * from absorb (silently folded into nearest endpoint, < threshold). A color
+   * below it is absorbed only if it looks like that endpoint (within
+   * 2x residualThreshold, OKLab) or is under 1% coverage (edge pixels);
+   * otherwise it stays buy. */
   mixCoveragePercent: number;
   /** Colors covering at least this percent of the image (after near-duplicate
    * merging) are always buy — never a mix or absorb target. Default 15. */
@@ -151,6 +154,95 @@ export const DEFAULT_DOMINANT_COVERAGE_PERCENT = 15;
 // what the mixed color covers. 0.5 leaves room for pixel-count noise across
 // an evenly weighted gradient while blocking rare accents as partners.
 const MIN_PARTNER_COVERAGE_RATIO = 0.5;
+
+// Near-duplicate dedup (Phase 0) never merges two colors farther apart than
+// this OKLab distance, whatever the preset. ~0.02 is a just-noticeable
+// difference; at 0.05 (2.5 JNDs) two flat areas side by side still read as
+// "the same paint" at mural distance. The aggressive preset (0.07) used to
+// dedup at its full threshold, which merged Coral's flat red #D93A48 into the
+// magenta #DA246D (0.065 apart) — two reds a painter keeps separate. Wider
+// gaps are left to the mix-line test, which keeps a recipe (or the absorb
+// distance limit below).
+const MAX_DEDUP_DISTANCE = 0.05;
+
+// A color below mixCoveragePercent that fits a mixing line is absorbed into
+// the nearer line endpoint only if it is within ABSORB_DISTANCE_FACTOR x the
+// residual threshold of it (OKLab). The residual threshold is the user's
+// "how far off may a painted color be" tolerance; snapping a color along the
+// line moves it further than the residual, so the limit is twice the
+// threshold (Conservative 0.04, Balanced 0.08, Aggressive 0.14). That folds
+// in shades that look like their endpoint and keeps a distinct small color
+// such as the octopus's light-pink suckers (#FDB2C0, 0.17-0.18 from both its
+// pink and white endpoints, so it used to be painted white or tan).
+const ABSORB_DISTANCE_FACTOR = 2;
+
+// Colors below this coverage percent that fit a line between two buy colors
+// absorb regardless of the distance limit: they are anti-aliasing / JPEG
+// edge pixels between two flat areas. The analyzer samples <= 22,000 pixels
+// of an image scaled to <= 320 px, so a 1-px seam running the full width is
+// at most ~320 px (~1.5%), and it splits across at least two blend buckets
+// (~0.75% each). 1% catches those with margin. On the real test images the
+// small details that must survive sit above it (octopus suckers 3.2-3.6%,
+// Coral red 6.3%, FlowerRepeat #D8798E 1.7%), while the 0.5-0.8% greys
+// between Mazdarati's black and white are seams. 0.5% kept those greys and
+// added 3-6 chips per image at Balanced.
+const EDGE_COVERAGE_PERCENT = 1;
+
+// --- Paint plausibility (see isPlausibleMix) --------------------------------
+// Measured in OKLCh: L = value (0-1), C = chroma, h = hue angle.
+//
+// Below this chroma a color is treated as hueless (white, black, greys).
+// White/black/neutral greys from real palettes measure C < 0.01 and warm
+// greiges up to ~0.02; the FlowerRepeat navy #313D52 (C 0.040) is a real
+// blue and must keep its hue.
+const NEUTRAL_CHROMA = 0.025;
+// Chroma slack: mixing never raises chroma, so the target may not be more
+// saturated than the more saturated partner (the ceiling). Straight sRGB
+// lerps bend slightly in OKLab, but none of the 84 CSV fixture steps exceeds
+// the ceiling (closest is 0.006 under). 0.012 covers quantisation noise and
+// still rejects FlowerRepeat's dark yellow #F5C233 (C 0.158) from light
+// yellow (0.141) + navy (0.040), 0.017 over. The same slack is used for the
+// near-complement bound below.
+const CHROMA_CEILING_TOLERANCE = 0.012;
+// Value bracket slack: base + per-chroma term. sRGB midpoints of two
+// saturated colors of similar value come out lighter than both in OKLab
+// (CSV "Bright Red to Royal Blue" steps are up to 0.054 lighter than either
+// end, "Green to Red" 0.028), and the effect scales with the partners'
+// chroma. 0.02 + 0.2 x the duller partner's chroma gives 0.066 there and
+// ~0.02 when a partner is white/black/grey, so tints and shades get a tight
+// bracket.
+const VALUE_BRACKET_TOLERANCE = 0.02;
+const VALUE_BRACKET_CHROMA_SLOPE = 0.2;
+// Hue slack for tints/shades (one neutral partner), in degrees. Tints keep
+// hue, but an sRGB lerp toward white drifts: CSV "Indigo to white" steps
+// drift up to 15 degrees (the familiar blue-to-purple shift), "Cyan to
+// White" 7. 20 degrees covers those and still rejects a tint whose hue the
+// partner does not have.
+const TINT_HUE_TOLERANCE_DEGREES = 20;
+// Slack outside the shorter hue arc between two chromatic partners,
+// measured on the a/b plane (chroma x off-arc angle in radians) so that hue
+// noise in low-chroma colors does not count as much as a visible hue shift
+// in a saturated one. Every CSV step between two chromatic,
+// non-complementary colors lies on the arc (0 off); one 8-bit sRGB step
+// moves a/b by ~0.003-0.005. 0.008 allows that noise and rejects
+// FlowerRepeat's dark yellow (h 87.5, C 0.158) from light yellow (h 92.3) +
+// green #84B73F (h ~128): it sits 4.8 degrees outside the arc, 0.013 on
+// the a/b plane — more orange than either partner.
+const ARC_HUE_TOLERANCE = 0.008;
+// Partners at least this far apart in hue are near-complements: their mixes
+// pass through grey, so "between" has no meaning and the hue-arc check is
+// skipped. For any two chromatic partners (complements included) the target
+// may not exceed their chroma interpolated at the recipe fraction (the
+// triangle inequality on the OKLab a/b plane — complements dull, and 8%
+// pink cannot turn FlowerRepeat's navy #313D52, C 0.040, into the purple
+// #47315E, C 0.079). This is looser than the "below both partners' chroma"
+// rule for complements, which straight sRGB lerps break near the saturated
+// end (CSV "Indigo to desaturated Yellow" 80/20 is C 0.156 against partners
+// 0.189 / 0.067), and the worst interpolated excess across all 84 CSV steps
+// is 0.005, inside CHROMA_CEILING_TOLERANCE. Tints and shades (one neutral
+// partner) are exempt: the sRGB fraction of white is not a paint fraction,
+// and light yellow #F9D55F really is white + dark yellow #F5C233.
+const COMPLEMENT_HUE_DEGREES = 150;
 
 export type ClassifiedColor = {
   id: string;
@@ -483,14 +575,14 @@ export function classifyPaletteColors(
 
   // Phase 0: near-duplicate dedup. Real-image palettes capture many colors
   // that are perceptual neighbors without being on a three-point mixing
-  // line. Any pair closer than the residual threshold (OKLab distance) is
-  // merged — the lower-coverage member absorbs into the higher-coverage
+  // line. Any pair closer than the residual threshold (OKLab distance,
+  // capped at MAX_DEDUP_DISTANCE) is merged — the lower-coverage member absorbs into the higher-coverage
   // one, silently (no mix recipe). Survivor pixel counts include the
   // pixels they absorbed. A dominant color is never the absorbed member.
   const isLockedId = (id: string) => options.lockedIds?.has(id) ?? false;
   const dedupResult = dedupNearestNeighbors(
     colors,
-    options.residualThreshold,
+    Math.min(options.residualThreshold, MAX_DEDUP_DISTANCE),
     (dominantCoveragePercent / 100) * totalPixels,
     isLockedId
   );
@@ -524,6 +616,24 @@ export function classifyPaletteColors(
       options.residualThreshold
     );
 
+  // A color that fits a line is only taken out of the buy set if the result
+  // still looks like it: at or above mixCoveragePercent it keeps a recipe
+  // (exact color); below, it is absorbed into the nearer endpoint only if
+  // that endpoint is within the absorb distance limit, or if it is
+  // sub-EDGE_COVERAGE_PERCENT edge clutter. Otherwise it stays a buy color.
+  const absorbDistanceLimit = ABSORB_DISTANCE_FACTOR * options.residualThreshold;
+  const labOf = new Map(colors.map((color) => [color.id, rgbToOklab(color.rgb)]));
+  const absorbTargetOf = (fit: NonNullable<ReturnType<typeof fitFromBuys>>) =>
+    fit.t < 0.5 ? fit.endpointA : fit.endpointB;
+  const nonBuyFit = (color: ClassifyPaletteInput) => {
+    const fit = fitFromBuys(color);
+    if (!fit) return null;
+    const coverage = coverageOf(color);
+    if (coverage >= options.mixCoveragePercent || coverage < EDGE_COVERAGE_PERCENT) return fit;
+    const distance = oklabDistance(labOf.get(color.id)!, labOf.get(absorbTargetOf(fit).id)!);
+    return distance <= absorbDistanceLimit ? fit : null;
+  };
+
   // Phase 1: greedy, coverage-ordered buy set. Survivors are visited from
   // most to least used. Each one is tested against the buy set built so far:
   // if two existing buy colors mix to it within the threshold it is a mix
@@ -540,7 +650,7 @@ export function classifyPaletteColors(
   }
   for (const color of ordered) {
     if (buyIds.has(color.id)) continue;
-    if (isDominant(color) || !fitFromBuys(color)) {
+    if (isDominant(color) || !nonBuyFit(color)) {
       buyIds.add(color.id);
     }
   }
@@ -557,14 +667,14 @@ export function classifyPaletteColors(
     const ascendingBuys = ordered.filter((entry) => buyIds.has(entry.id)).reverse();
     for (const color of ascendingBuys) {
       if (isDominant(color) || isLockedId(color.id)) continue;
-      if (fitFromBuys(color)) {
+      if (nonBuyFit(color)) {
         buyIds.delete(color.id);
         changed = true;
       }
     }
     for (const color of ordered) {
       if (buyIds.has(color.id)) continue;
-      if (!fitFromBuys(color)) {
+      if (!nonBuyFit(color)) {
         buyIds.add(color.id);
         changed = true;
       }
@@ -581,7 +691,7 @@ export function classifyPaletteColors(
       classifications.set(color.id, { id: color.id, classification: "buy" });
       continue;
     }
-    const fit = fitFromBuys(color);
+    const fit = nonBuyFit(color);
     if (!fit) {
       // Unreachable after Phase 2 settles; kept as a safe default.
       classifications.set(color.id, { id: color.id, classification: "buy" });
@@ -604,7 +714,7 @@ export function classifyPaletteColors(
       classifications.set(color.id, {
         id: color.id,
         classification: "absorb",
-        absorbedIntoId: t < 0.5 ? endpointA.id : endpointB.id
+        absorbedIntoId: absorbTargetOf(fit).id
       });
     }
   }
@@ -630,7 +740,6 @@ export function classifyPaletteColors(
   // absorb into a color nobody buys, so each one folds into whichever of the
   // mix's two components is nearer to it (OKLab) — the nearer-endpoint rule
   // Phase 3 uses for low-coverage mixes. Recipe components are always buys.
-  const labOf = new Map(colors.map((color) => [color.id, rgbToOklab(color.rgb)]));
   for (const [id, entry] of classifications.entries()) {
     if (entry.classification !== "absorb" || !entry.absorbedIntoId) continue;
     let target = entry.absorbedIntoId;
@@ -776,6 +885,9 @@ const PARTNER_RESIDUAL_SLACK = 0.25;
  * tolerance is perceptual and a hue the line misses (white + black for a
  * teal) costs its full chroma difference.
  *
+ * Every candidate pair must also pass isPlausibleMix (paint-plausibility):
+ * being near the sRGB line is not enough if a painter could not get there.
+ *
  * Scoring: let `best` be the lowest residual among fitting pairs. Every pair
  * within `best + PARTNER_RESIDUAL_SLACK * threshold` is acceptable; among
  * those, pick the pair whose less-used partner has the most pixels (a
@@ -790,6 +902,7 @@ function findBestMixingPair(
   if (buyColors.length < 2) return null;
 
   const candidateLab = rgbToOklab(candidate.rgb);
+  const candidateLch = oklabToLch(candidateLab);
   const fits: {
     endpointA: ClassifyPaletteInput;
     endpointB: ClassifyPaletteInput;
@@ -804,6 +917,11 @@ function findBestMixingPair(
       const fit = projectOntoSegment(candidate.rgb, candidateLab, a.rgb, b.rgb);
       if (fit === null) continue;
       if (fit.residual > residualThreshold) continue;
+      if (
+        !isPlausibleMix(candidateLch, oklabToLch(rgbToOklab(a.rgb)), oklabToLch(rgbToOklab(b.rgb)), fit.t)
+      ) {
+        continue;
+      }
       fits.push({ endpointA: a, endpointB: b, t: fit.t, residual: fit.residual });
     }
   }
@@ -833,6 +951,64 @@ function findBestMixingPair(
   }
 
   return best;
+}
+
+type Lch = { L: number; C: number; h: number };
+
+function oklabToLch(lab: readonly [number, number, number]): Lch {
+  const h = (Math.atan2(lab[2], lab[1]) * 180) / Math.PI;
+  return { L: lab[0], C: Math.hypot(lab[1], lab[2]), h: h < 0 ? h + 360 : h };
+}
+
+/** Smallest angle between two hues, 0-180 degrees. */
+function hueDistance(left: number, right: number): number {
+  const d = Math.abs(left - right) % 360;
+  return d > 180 ? 360 - d : d;
+}
+
+/**
+ * Paint-plausibility of making `target` from partners `a` and `b`, with `t`
+ * the fraction of `b` (0 = all `a`). Real paint mixing never raises chroma,
+ * never leaves the partners' value range, and keeps hue between the
+ * partners; a color that only happens to sit near the sRGB line between two
+ * buy colors (dark yellow "from" light yellow + navy, a blush "from" white +
+ * teal) fails one of these. Tolerances and their calibration are documented
+ * at the constants above.
+ */
+function isPlausibleMix(target: Lch, a: Lch, b: Lch, t: number): boolean {
+  // a. Chroma ceiling.
+  if (target.C > Math.max(a.C, b.C) + CHROMA_CEILING_TOLERANCE) return false;
+
+  // b. Value bracket.
+  const valueTolerance =
+    VALUE_BRACKET_TOLERANCE + VALUE_BRACKET_CHROMA_SLOPE * ((a.C + b.C) / 2);
+  if (target.L > Math.max(a.L, b.L) + valueTolerance) return false;
+  if (target.L < Math.min(a.L, b.L) - valueTolerance) return false;
+
+  // c. Hue. A near-neutral target has no meaningful hue.
+  if (target.C < NEUTRAL_CHROMA) return true;
+  const aNeutral = a.C < NEUTRAL_CHROMA;
+  const bNeutral = b.C < NEUTRAL_CHROMA;
+  // Two neutrals cannot make a chromatic color.
+  if (aNeutral && bNeutral) return false;
+  // Tint or shade: keeps the chromatic partner's hue.
+  if (aNeutral || bNeutral) {
+    const chromatic = aNeutral ? b : a;
+    return hueDistance(target.h, chromatic.h) <= TINT_HUE_TOLERANCE_DEGREES;
+  }
+  // Two chromatic partners: no more chroma than theirs interpolated at the
+  // recipe fraction (8% pink cannot double a navy's chroma), which is also
+  // what makes near-complements dull toward grey.
+  if (target.C > (1 - t) * a.C + t * b.C + CHROMA_CEILING_TOLERANCE) return false;
+  const partnerSpread = hueDistance(a.h, b.h);
+  // Near-complements: "between" has no meaning; the chroma bound decides.
+  if (partnerSpread >= COMPLEMENT_HUE_DEGREES) return true;
+  // On the shorter arc between the partners (+- tolerance): the target's
+  // distances to both ends add up to the arc length when it lies on it, and
+  // the excess is twice the angle by which it overshoots the nearer end.
+  const offArcDegrees =
+    (hueDistance(target.h, a.h) + hueDistance(target.h, b.h) - partnerSpread) / 2;
+  return target.C * ((offArcDegrees * Math.PI) / 180) <= ARC_HUE_TOLERANCE;
 }
 
 function projectOntoSegment(
