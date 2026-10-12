@@ -18,6 +18,7 @@ import {
   type ProjectStatus,
   type ProjectTile
 } from "./apiClient";
+import { useConfirm } from "./ConfirmDialog";
 
 // ---------------------------------------------------------------------------
 // Helpers — extracted so they can be unit-tested without a DOM / React
@@ -141,8 +142,8 @@ export type ProjectsDashboardProps = {
   api?: DashboardApi;
   /** Test seam: override the location assign call. */
   assignLocation?: (url: string) => void;
-  /** Test seam: override `window.confirm`. */
-  confirmFn?: (message: string) => boolean;
+  /** Test seam: override the in-app delete confirmation. */
+  confirmFn?: (message: string) => boolean | Promise<boolean>;
   /** Test seam: initial status. */
   initialStatus?: ProjectStatus;
 };
@@ -164,12 +165,18 @@ export function ProjectsDashboard(props: ProjectsDashboardProps = {}) {
       }),
     [props.assignLocation]
   );
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const confirmFn = useMemo(
     () =>
       props.confirmFn ??
       ((message: string) =>
-        typeof window !== "undefined" ? window.confirm(message) : false),
-    [props.confirmFn]
+        confirm({
+          title: "Delete project?",
+          message,
+          confirmLabel: "Delete",
+          destructive: true
+        })),
+    [props.confirmFn, confirm]
   );
 
   const [status, setStatus] = useState<ProjectStatus>(
@@ -223,7 +230,7 @@ export function ProjectsDashboard(props: ProjectsDashboardProps = {}) {
   }, [api, assignLocation, status]);
 
   async function handleDelete(project: ProjectTile) {
-    const ok = confirmFn(
+    const ok = await confirmFn(
       `Delete "${project.name}"? You can restore it from Trash within 14 days.`
     );
     if (!ok) return;
@@ -456,6 +463,7 @@ export function ProjectsDashboard(props: ProjectsDashboardProps = {}) {
           ))}
         </ul>
       )}
+      {confirmDialog}
     </section>
   );
 }
