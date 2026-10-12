@@ -74,3 +74,34 @@ Variant A plus a pigment path using `spectral.js` (MIT, v3.x, the Kubelka–Munk
 - Known limitation: Auto-combine re-classifies the already-combined palette (separate bug, not fixed here). To lock a color that has already been merged away, press "Reset to original colors" first, lock it, then Auto-combine.
 
 **Persistence.** `paletteColorSchema` gains `locked: z.boolean().optional()`. The schema is a non-strict `z.object`, so before this change a `locked` key was silently stripped on save, not rejected. Unlocked colors omit the key.
+
+## Variant B sunset (2026-10-12)
+
+Variant B (`feat/mix-spectral`, PR #14) is closed. Real-art testing on the five test images (`docs/example_art/{Coral,FlowerRepeat,KillerFrosting,Mazdarati}.jpg`, `feedback/IMG_3043.jpg`) showed Variant A was more reliable. B picked black/white as partners on Mazdarati, gave implausible recipes on the octopus at Aggressive, and ran about 8x slower. Instead of a pigment model, paint plausibility now comes from the explicit checks below. Variant A (`feat/mix-oklab`, PR #13) is the one going forward.
+
+## Paint-plausibility checks, distinct small colors, Auto-combine snapshot (2026-10-12)
+
+**Paint plausibility (`packages/core`, `isPlausibleMix`).** Every candidate pair in `findBestMixingPair` must pass these rules. That function is the only place a color is judged "on a line between two buy colors": the greedy, settle and classify passes all use it. The rules are evaluated in OKLCh, and the tolerances are justified at their constants:
+- Chroma ceiling: C(T) ≤ max(C(P1), C(P2)) + 0.012. None of the 84 CSV sRGB-lerp steps exceeds the ceiling.
+- Value bracket: L(T) stays within the partners' L range ± (0.02 + 0.2 × the partners' mean chroma). sRGB midpoints of two saturated colors come out lighter in OKLab: up to 0.054 on CSV "Bright Red to Royal Blue".
+- Hue. Partners with C < 0.025 count as neutral, and a target with C < 0.025 skips the hue check.
+  - Two neutral partners never make a chromatic target.
+  - With one neutral partner, the target's hue must be within 20° of the chromatic partner's hue. sRGB tints drift by up to 15°, as on CSV "Indigo to white".
+  - With two chromatic partners, the target may not exceed the partners' chroma interpolated at the recipe fraction + 0.012. If the partners are less than 150° apart in hue, the target must also lie on the shorter hue arc between them, with up to 0.008 of slack on the a/b plane.
+  - Near-complements (≥ 150° apart) skip the arc test, and the interpolated-chroma bound is what makes them dull toward grey. The literal "below both partners' chroma" rule was not used, because CSV sRGB lerps break it near the saturated end.
+- Regression case: on FlowerRepeat, dark yellow `#F5C233` is no longer "7% navy + 93% light yellow". At Conservative and Balanced, light yellow is now 23% white + 77% dark yellow. At Aggressive, the two yellows are 0.049 apart and dedup into light yellow.
+
+**Distinct small colors.** A color below `mixCoveragePercent` that fits a line is absorbed into the nearer endpoint only when either of these holds:
+- It is within `2 × residualThreshold` (OKLab) of that endpoint.
+- It covers under 1% of the image. These are anti-aliasing seams: at ≤ 22,000 samples, a full-width 1-px seam is about 1.5%, split over at least two blend buckets.
+
+Otherwise the color stays buy. The rule is applied inside the greedy and settle passes as well, so the result stays coherent. The octopus suckers `#FDB2C0` (3.2–3.6%, 0.17–0.18 from both pink and white) now stay buy at Balanced with a 5% mix threshold.
+
+Phase-0 near-duplicate dedup is capped at an OKLab distance of 0.05 (2.5 JND). At Aggressive (0.07), dedup used to merge Coral's flat red `#D93A48` into the magenta `#DA246D`, which is 0.065 away. With the cap, the red is a mix (77% `#DA246D` + 23% `#EDA93C`) instead of being dropped.
+
+**Auto-combine snapshot (`apps/web/app/autoCombine.ts`, `PrototypeApp.tsx`).** Previously, Auto-combine re-classified the palette that a previous Auto-combine had already shrunk and re-weighted. As a result, Aggressive → Conservative did not get back to the Conservative result. Now:
+- The first Auto-combine snapshots the palette, including manual merges and lock flags.
+- Every later Auto-combine re-classifies from that snapshot, taking lock flags from the current chips. Transparent flags are keyed by id, so they carry over.
+- Merge Selected, Reset to original colors, Full reset, a new upload, and loading a project or restoring saved choices all clear the snapshot. The next Auto-combine then snapshots the edited palette.
+- The snapshot is not persisted. After a save and load, the first Auto-combine starts from the loaded palette, which may already be combined.
+- If nothing combines at the chosen setting, the snapshot palette is shown unchanged.
