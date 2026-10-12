@@ -13,15 +13,14 @@ import type {
   WorkspaceContent
 } from "@muralist/core";
 import {
-  applyClassification,
   applyMixesToCoverage,
   buildMaquetteFileName,
-  classifyPaletteColors,
   compareAspectRatios,
   deriveColorAreaEstimates,
   deriveGridSpec,
   suggestContainersForColors
 } from "@muralist/core";
+import { autoCombineBase, runAutoCombine } from "./autoCombine";
 import { useConfirm } from "./ConfirmDialog";
 import { downloadMaquettePdf } from "./maquettePdf";
 import {
@@ -248,6 +247,13 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [classifications, setClassifications] = useState<Record<string, PaletteClassification>>({});
   const [mixRecipes, setMixRecipes] = useState<MixRecipe[]>([]);
+  // The palette as it was before the first Auto-combine (manual merges and
+  // lock flags included). Every Auto-combine re-classifies from it, so
+  // presses and preset changes are idempotent and order-independent. Any
+  // manual edit (merge, reset, full reset, upload, load) clears it; the next
+  // Auto-combine then snapshots the palette as edited. Not persisted: after a
+  // save/load the first Auto-combine starts from the loaded palette.
+  const [autoCombineSnapshot, setAutoCombineSnapshot] = useState<PaletteColor[] | null>(null);
   // Colors flagged as bare-wall background: excluded from the paint estimate and
   // rendered as show-through (alpha 0) in the flatten preview + maquette PDF.
   const [transparentColorIds, setTransparentColorIds] = useState<Set<string>>(new Set());
@@ -643,6 +649,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
         if (cancelled) return;
         const hydrated = hydrateFromProject(project);
         setPaletteColors(hydrated.paletteColors);
+        setAutoCombineSnapshot(null);
         setClassifications(hydrated.classifications);
         setMixRecipes(hydrated.mixRecipes);
         setColorFinishOverrides(hydrated.colorFinishOverrides);
@@ -743,6 +750,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setColorFinishOverrides({});
     setColorCoatsOverrides({});
     setTransparentColorIds(new Set());
+    setAutoCombineSnapshot(null);
     setFlattenedImageUrl(null);
     sourcePixelsRef.current = null;
     setSanitizedImageBase64(null);
@@ -985,45 +993,26 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setMergeKeeperId("");
     setSaveMessage("");
     // Manual merge invalidates any prior auto-combine classifications — the
-    // recipes and absorb marks were based on the old palette composition.
+    // recipes and absorb marks were based on the old palette composition —
+    // and the pre-combine snapshot (the merge is a new baseline).
     setClassifications({});
     setMixRecipes([]);
+    setAutoCombineSnapshot(null);
   }
 
   function handleAutoCombine() {
-    if (paletteColors.length < 3) {
+    const base = autoCombineBase(autoCombineSnapshot, paletteColors);
+    if (base.length < 3) {
       setSaveMessage("Need at least three captured colors before auto-combine can help.");
       return;
     }
+    if (!autoCombineSnapshot) setAutoCombineSnapshot(base);
 
-    const classifierInput = paletteColors.map((color) => ({
-      id: color.id,
-      rgb: color.rgb,
-      pixelCount: color.pixelCount
-    }));
-
-    const lockedIds = new Set(
-      paletteColors.filter((color) => color.locked).map((color) => color.id)
-    );
-    const classifiedList = classifyPaletteColors(classifierInput, {
-      residualThreshold: proSettings.residualThreshold,
-      mixCoveragePercent: proSettings.mixCoveragePercent,
-      lockedIds
-    });
-    const { nextColors, mixes, absorbedCount } = applyClassification(classifierInput, classifiedList);
-
-    if (absorbedCount === 0 && mixes.length === 0) {
-      setSaveMessage("Nothing to auto-combine — no gradient or mix members detected.");
-      return;
-    }
-
-    const pixelCountById = new Map(nextColors.map((entry) => [entry.id, entry.pixelCount]));
-    const nextPalette: PaletteColor[] = paletteColors
-      .filter((color) => pixelCountById.has(color.id))
-      .map((color) => ({ ...color, pixelCount: pixelCountById.get(color.id)! }))
-      .sort((left, right) => right.pixelCount - left.pixelCount);
-
-    const rebalanced = rebalanceCoverage(nextPalette);
+    const { palette: rebalanced, classifications: nextClassifications, mixes, absorbedCount } =
+      runAutoCombine(base, {
+        residualThreshold: proSettings.residualThreshold,
+        mixCoveragePercent: proSettings.mixCoveragePercent
+      });
     const retainedIds = new Set(rebalanced.map((color) => color.id));
 
     setColorFinishOverrides((current) => {
@@ -1043,10 +1032,13 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setSelectedColorIds([]);
     setMergeKeeperId("");
 
-    const nextClassifications: Record<string, PaletteClassification> = {};
-    for (const entry of classifiedList) {
-      if (!retainedIds.has(entry.id)) continue;
-      nextClassifications[entry.id] = entry.classification;
+    if (absorbedCount === 0 && mixes.length === 0) {
+      // Nothing combines at this setting: show the pre-combine palette.
+      setPaletteColors(rebalanced);
+      setClassifications({});
+      setMixRecipes([]);
+      setSaveMessage("Nothing to auto-combine — no gradient or mix members detected.");
+      return;
     }
 
     setPaletteColors(rebalanced);
@@ -1091,6 +1083,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     );
     setClassifications({});
     setMixRecipes([]);
+    setAutoCombineSnapshot(null);
     setSelectedColorIds([]);
     setMergeKeeperId("");
     setColorFinishOverrides({});
@@ -1133,6 +1126,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       setPaletteColors(fresh.colors);
       setClassifications({});
       setMixRecipes([]);
+      setAutoCombineSnapshot(null);
       setSelectedColorIds([]);
       setMergeKeeperId("");
       setColorFinishOverrides({});
@@ -1312,6 +1306,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setWastePercent(savedMergePlan.wastePercent);
     setSourceAnalysis(savedMergePlan.sourceAnalysis);
     setPaletteColors(savedMergePlan.paletteColors);
+    setAutoCombineSnapshot(null);
     const restoredDefaultFinish =
       savedMergePlan.defaultFinishId ?? defaultFinishForBrand(savedMergePlan.selectedBrandId);
     setDefaultFinishId(restoredDefaultFinish);
