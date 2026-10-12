@@ -22,6 +22,7 @@ import {
   deriveGridSpec,
   suggestContainersForColors
 } from "@muralist/core";
+import { useConfirm } from "./ConfirmDialog";
 import { downloadMaquettePdf } from "./maquettePdf";
 import {
   OverLimitError,
@@ -168,6 +169,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   };
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const sourcePixelsRef = useRef<{ data: Uint8ClampedArray; width: number; height: number } | null>(null);
   // `proSettingsHydratedRef` flips to true once /me has populated proSettings
   // so the save-back effect doesn't PATCH the default values before the real
@@ -987,16 +989,18 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   // reduce the color set, so the original ids are a superset and this reintroduces
   // every color the analyzer found. "Full clean slate": drop all merge-derived
   // state, per-color overrides, and the on-device merge plan.
-  function handleResetPalette() {
+  async function handleResetPalette() {
     if (!sourceAnalysis) {
       return;
     }
-    if (
-      typeof window !== "undefined" &&
-      !window.confirm(
-        "Reset to the original image colors? This clears all merges and per-color finish/coats overrides."
-      )
-    ) {
+    const ok = await confirm({
+      title: "Reset to original colors?",
+      message:
+        "Reset to the original image colors? This clears all merges and per-color finish/coats overrides.",
+      confirmLabel: "Reset colors",
+      destructive: true
+    });
+    if (!ok) {
       return;
     }
     setPaletteColors(sourceAnalysis.colors);
@@ -1022,18 +1026,20 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   // into sourceAnalysis (for a loaded project that's the saved palette) — this
   // recomputes the very-first analysis from the picture itself. Art + wall
   // settings are untouched.
-  function handleFullReset() {
+  async function handleFullReset() {
     const source = sourcePixelsRef.current;
     if (!source) {
       setSaveMessage("No image loaded to re-analyze yet.");
       return;
     }
-    if (
-      typeof window !== "undefined" &&
-      !window.confirm(
-        "Full reset — rebuild the palette from the original image? This discards every merge and color edit. Your image and wall settings stay."
-      )
-    ) {
+    const ok = await confirm({
+      title: "Full reset?",
+      message:
+        "Full reset — rebuild the palette from the original image? This discards every merge and color edit. Your image and wall settings stay.",
+      confirmLabel: "Full reset",
+      destructive: true
+    });
+    if (!ok) {
       return;
     }
     try {
@@ -1710,6 +1716,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       </section>
 
       <canvas className="hidden-canvas" ref={canvasRef} />
+      {confirmDialog}
     </main>
   );
 }
