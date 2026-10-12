@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 import spectral from "spectral.js";
@@ -1060,4 +1062,179 @@ test("applyMixesToCoverage rejects unknown component references and bad fraction
       ),
     /expected 1.0/
   );
+});
+
+// feedback/ColorMixSamples(Sheet1).csv, copied as a fixture. Rows 1-2 are
+// headers; each data row holds six hex colors (endpoint A, 80/20, 60/40,
+// 40/60, 20/80, endpoint B) in columns 1-6 and a name in the last column.
+// The steps are exact straight sRGB interpolations of the endpoints (max
+// channel error 0.4 against a lerp), so they are ground truth for digital
+// gradients — NOT physical paint mixes. Incomplete rows (the trailing
+// "#FFFFFFF" row with no steps) are skipped.
+type GradientFixture = { name: string; hexes: string[] };
+
+function loadGradientFixtures(): GradientFixture[] {
+  const csv = readFileSync(
+    fileURLToPath(new URL("./fixtures/color-mix-samples.csv", import.meta.url)),
+    "utf8"
+  );
+  const gradients: GradientFixture[] = [];
+  for (const line of csv.split(/\r?\n/).slice(2)) {
+    const cells = line.split(",").map((cell) => cell.trim());
+    const hexes = cells.slice(0, 6);
+    if (!hexes.every((hex) => /^#[0-9A-Fa-f]{6}$/.test(hex))) continue;
+    gradients.push({ name: cells[cells.length - 1] ?? "", hexes: hexes.map((hex) => hex.toUpperCase()) });
+  }
+  return gradients;
+}
+
+test("classifyPaletteColors never absorbs into a near-duplicate keeper that became a mix", () => {
+  // Low-chroma palette: #97938E is a mid greige on the line between the
+  // off-white and the charcoal, and #9C9893 is its near-duplicate. Phase 0
+  // folds #9C9893 into #97938E; with the dominant rule disabled #97938E is
+  // then classified a mix, which used to leave #9C9893 absorbed into a color
+  // nobody buys.
+  const colors = paletteFromHexCoverage([
+    ["#F2EFEA", 30],
+    ["#3A3836", 20],
+    ["#97938E", 18],
+    ["#C4C0BA", 9],
+    ["#6B6865", 8],
+    ["#9C9893", 6],
+    ["#5E5C5A", 3]
+  ]);
+  const classifications = classifyPaletteColors(colors, {
+    residualThreshold: 0.07,
+    mixCoveragePercent: 5,
+    dominantCoveragePercent: 100
+  });
+  const byId = new Map(classifications.map((entry) => [entry.id, entry]));
+  assert.equal(byId.get("#97938E")?.classification, "mix");
+  assert.equal(byId.get("#9C9893")?.classification, "absorb");
+  assertCoherent(classifications);
+});
+
+test("classifyPaletteColors absorbs and mixes only into buy colors across presets and palettes", () => {
+  const gradients = loadGradientFixtures();
+  const palettes: Record<string, ClassifyPaletteInput[]> = {
+    teal: paletteFromHexCoverage([
+      ["#FFFFFF", 50.7],
+      ["#92D8D7", 21.4],
+      ["#038D8C", 8.9],
+      ["#390E5D", 6.9],
+      ["#FAD678", 6.0],
+      ["#020F1A", 3.3],
+      ["#3BB5B2", 2.7],
+      ["#C1A76C", 0.1]
+    ]),
+    greige: paletteFromHexCoverage([
+      ["#F2EFEA", 30],
+      ["#3A3836", 20],
+      ["#97938E", 18],
+      ["#C4C0BA", 9],
+      ["#6B6865", 8],
+      ["#9C9893", 6],
+      ["#5E5C5A", 3]
+    ]),
+    grays: paletteFromHexCoverage([
+      ["#FFFFFF", 35],
+      ["#000000", 25],
+      ["#808080", 20],
+      ["#404040", 6],
+      ["#858585", 5],
+      ["#C0C0C0", 5],
+      ["#7B7B7B", 4]
+    ]),
+    clusters: [
+      { id: "red-main", rgb: [210, 40, 40], pixelCount: 100 },
+      { id: "red-near", rgb: [214, 44, 43], pixelCount: 20 },
+      { id: "blue-main", rgb: [40, 40, 210], pixelCount: 90 },
+      { id: "blue-near", rgb: [36, 43, 213], pixelCount: 15 },
+      { id: "mid", rgb: [125, 40, 125], pixelCount: 8 }
+    ],
+    gradients: gradientPalette(gradients.slice(0, 4))
+  };
+  for (const [name, colors] of Object.entries(palettes)) {
+    for (const residualThreshold of OKLAB_PRESETS) {
+      for (const mixCoveragePercent of [0, 5]) {
+        for (const dominantCoveragePercent of [15, 100]) {
+          const classifications = classifyPaletteColors(colors, {
+            residualThreshold,
+            mixCoveragePercent,
+            dominantCoveragePercent
+          });
+          assertCoherent(classifications);
+          assert.doesNotThrow(() => applyClassification(colors, classifications));
+        }
+      }
+    }
+  }
+});
+
+// Endpoints 3000 px each, interior steps 600 px each; shared hexes across
+// gradients are deduped with their pixels summed.
+function gradientPalette(gradients: GradientFixture[]): ClassifyPaletteInput[] {
+  const pixelsById = new Map<string, number>();
+  for (const { hexes } of gradients) {
+    hexes.forEach((hex, index) => {
+      const pixels = index === 0 || index === hexes.length - 1 ? 3000 : 600;
+      pixelsById.set(hex, (pixelsById.get(hex) ?? 0) + pixels);
+    });
+  }
+  return [...pixelsById].map(([hex, pixelCount]) => ({ id: hex, rgb: hexToRgb(hex), pixelCount }));
+}
+
+test("classifyPaletteColors recovers every CSV fixture gradient step from its endpoints", () => {
+  const gradients = loadGradientFixtures();
+  assert.equal(gradients.length, 21);
+  for (const { name, hexes } of gradients) {
+    const colors = gradientPalette([{ name, hexes }]);
+    const endpointA = hexes[0]!;
+    const endpointB = hexes[hexes.length - 1]!;
+    const interior = hexes.slice(1, -1);
+    const totalPixels = colors.reduce((sum, color) => sum + color.pixelCount, 0);
+    for (const residualThreshold of OKLAB_PRESETS) {
+      for (const dominantCoveragePercent of [15, 100]) {
+        const classifications = classifyPaletteColors(colors, {
+          residualThreshold,
+          mixCoveragePercent: 5,
+          dominantCoveragePercent
+        });
+        const byId = new Map(classifications.map((entry) => [entry.id, entry]));
+        interior.forEach((hex, index) => {
+          const entry = byId.get(hex)!;
+          const label = `${name} ${hex} at ${residualThreshold}, dominant ${dominantCoveragePercent}%`;
+          if (entry.classification === "absorb" && residualThreshold > OKLAB_PRESETS[0]!) {
+            assert.ok(hexes.includes(entry.absorbedIntoId!), `${label} absorbs outside its gradient`);
+            return;
+          }
+          // Known exception, not a mix-fit failure: at the aggressive preset
+          // the steps can sit closer than the near-duplicate distance, so one
+          // step absorbs both neighbours and the merged clump crosses the
+          // dominant cutoff, which pins it to buy (Orange to yellow at 0.07).
+          // Only allowed when its own + absorbed pixels really are dominant.
+          if (entry.classification === "buy" && residualThreshold > OKLAB_PRESETS[0]!) {
+            const mergedPixels = colors
+              .filter((color) => color.id === hex || byId.get(color.id)?.absorbedIntoId === hex)
+              .reduce((sum, color) => sum + color.pixelCount, 0);
+            assert.ok(
+              (mergedPixels / totalPixels) * 100 >= dominantCoveragePercent,
+              `${label} is buy without being dominant`
+            );
+            return;
+          }
+          assert.equal(entry.classification, "mix", label);
+          const fractions = new Map(
+            entry.recipe!.components.map((component) => [component.colorId, component.fraction])
+          );
+          assert.deepEqual([...fractions.keys()].sort(), [endpointA, endpointB].sort(), `${label} partners`);
+          const expectedA = 0.8 - index * 0.2;
+          assert.ok(
+            Math.abs(fractions.get(endpointA)! - expectedA) <= 0.02,
+            `${label}: endpoint A fraction ${fractions.get(endpointA)} vs ${expectedA}`
+          );
+        });
+      }
+    }
+  }
 });

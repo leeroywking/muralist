@@ -611,6 +611,13 @@ export function classifyPaletteColors(
   // Phase 0 routed to that keeper now point at an absorbed id, and
   // applyClassification's pixelCount fold throws when it hits the stale
   // reference.
+  //
+  // A Phase 0 keeper can also end up a mix (nothing dominant pins it to buy,
+  // and it sits on a line between two buys). Its near-duplicates would then
+  // absorb into a color nobody buys, so each one folds into whichever of the
+  // mix's two components is nearer to it (OKLab) — the nearer-endpoint rule
+  // Phase 3 uses for low-coverage mixes. Recipe components are always buys.
+  const labOf = new Map(colors.map((color) => [color.id, rgbToOklab(color.rgb)]));
   for (const [id, entry] of classifications.entries()) {
     if (entry.classification !== "absorb" || !entry.absorbedIntoId) continue;
     let target = entry.absorbedIntoId;
@@ -618,6 +625,16 @@ export function classifyPaletteColors(
     while (!visited.has(target)) {
       visited.add(target);
       const next = classifications.get(target);
+      if (next?.classification === "mix" && next.recipe) {
+        const [componentA, componentB] = next.recipe.components;
+        const lab = labOf.get(id)!;
+        target =
+          oklabDistance(lab, labOf.get(componentA!.colorId)!) <=
+          oklabDistance(lab, labOf.get(componentB!.colorId)!)
+            ? componentA!.colorId
+            : componentB!.colorId;
+        break;
+      }
       if (!next || next.classification !== "absorb" || !next.absorbedIntoId) break;
       target = next.absorbedIntoId;
     }
