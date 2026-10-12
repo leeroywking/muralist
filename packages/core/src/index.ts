@@ -1,4 +1,5 @@
 import type { PaintBrandCatalog, PaintBrandPrices } from "@muralist/config";
+import spectral from "spectral.js";
 
 export type AuthCapabilities = {
   mode: "oauth_only";
@@ -501,6 +502,9 @@ export function classifyPaletteColors(
     (left, right) => right.pixelCount - left.pixelCount || left.id.localeCompare(right.id)
   );
   const buyIds = new Set<string>();
+  // Pigment mix curves depend only on the two buy colors, so they are
+  // sampled once per pair and reused across every candidate and pass.
+  const pigmentCurves = new Map<string, PigmentCurve>();
   const fitFromBuys = (color: ClassifyPaletteInput) =>
     findBestMixingPair(
       color,
@@ -510,7 +514,8 @@ export function classifyPaletteColors(
           entry.id !== color.id &&
           entry.pixelCount >= color.pixelCount * MIN_PARTNER_COVERAGE_RATIO
       ),
-      options.residualThreshold
+      options.residualThreshold,
+      pigmentCurves
     );
 
   // Phase 1: greedy, coverage-ordered buy set. Survivors are visited from
@@ -722,12 +727,18 @@ const PARTNER_RESIDUAL_SLACK = 0.25;
 /**
  * Find the two buy colors that best mix to `candidate`.
  *
- * Fit (Variant A): the mix path is the straight sRGB line between the two
- * buy colors — digital gradient tools interpolate in sRGB. `t` is the
- * candidate's projection onto that line in sRGB; the residual is the OKLab
- * distance between the candidate and the sRGB point at `t`, so the
- * tolerance is perceptual and a hue the line misses (white + black for a
- * teal) costs its full chroma difference.
+ * Fit: each pair is tested along two mix paths and the lower residual wins;
+ * the recipe's `t` comes from the winning path.
+ * - sRGB line: digital gradient tools interpolate in sRGB. `t` is the
+ *   candidate's projection onto that line in sRGB; the residual is the OKLab
+ *   distance between the candidate and the sRGB point at `t`, so the
+ *   tolerance is perceptual and a hue the line misses (white + black for a
+ *   teal) costs its full chroma difference.
+ * - Pigment curve (Variant B): physical paint does not mix along the sRGB
+ *   line (blue + yellow paint goes through green, not gray). The curve is the
+ *   Kubelka-Munk mix from spectral.js of `(1 - t)` parts A and `t` parts B,
+ *   sampled across t in [0, 1] and refined around the closest sample; the
+ *   residual is the OKLab distance to the closest point found.
  *
  * Scoring: let `best` be the lowest residual among fitting pairs. Every pair
  * within `best + PARTNER_RESIDUAL_SLACK * threshold` is acceptable; among
@@ -738,7 +749,8 @@ const PARTNER_RESIDUAL_SLACK = 0.25;
 function findBestMixingPair(
   candidate: ClassifyPaletteInput,
   buyColors: ClassifyPaletteInput[],
-  residualThreshold: number
+  residualThreshold: number,
+  pigmentCurves: Map<string, PigmentCurve>
 ): { endpointA: ClassifyPaletteInput; endpointB: ClassifyPaletteInput; t: number; residual: number } | null {
   if (buyColors.length < 2) return null;
 
@@ -754,7 +766,16 @@ function findBestMixingPair(
     for (let j = i + 1; j < buyColors.length; j += 1) {
       const a = buyColors[i]!;
       const b = buyColors[j]!;
-      const fit = projectOntoSegment(candidate.rgb, candidateLab, a.rgb, b.rgb);
+      const lineFit = projectOntoSegment(candidate.rgb, candidateLab, a.rgb, b.rgb);
+      const pigmentFit = fitPigmentCurve(
+        candidateLab,
+        getPigmentCurve(pigmentCurves, a, b),
+        residualThreshold
+      );
+      const fit =
+        lineFit === null || (pigmentFit !== null && pigmentFit.residual < lineFit.residual)
+          ? pigmentFit
+          : lineFit;
       if (fit === null) continue;
       if (fit.residual > residualThreshold) continue;
       fits.push({ endpointA: a, endpointB: b, t: fit.t, residual: fit.residual });
@@ -811,6 +832,110 @@ function projectOntoSegment(
   return { t, residual };
 }
 
+// Pigment curve sampling: coarse step across t in [0, 1], then a fine search
+// within one coarse step either side of the closest sample.
+const PIGMENT_COARSE_STEPS = 50;
+const PIGMENT_FINE_STEPS = 20;
+
+type PigmentCurve = {
+  a: InstanceType<typeof spectral.Color>;
+  b: InstanceType<typeof spectral.Color>;
+  /** OKLab point at t = index / PIGMENT_COARSE_STEPS. */
+  samples: [number, number, number][];
+  /** OKLab bounding box of the samples, for a cheap reject. */
+  min: [number, number, number];
+  max: [number, number, number];
+};
+
+function getPigmentCurve(
+  cache: Map<string, PigmentCurve>,
+  a: ClassifyPaletteInput,
+  b: ClassifyPaletteInput
+): PigmentCurve {
+  const key = `${a.id}\u0000${b.id}`;
+  const cached = cache.get(key);
+  if (cached) return cached;
+
+  const colorA = new spectral.Color([...a.rgb]);
+  const colorB = new spectral.Color([...b.rgb]);
+  const samples: [number, number, number][] = [];
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (let index = 0; index <= PIGMENT_COARSE_STEPS; index += 1) {
+    const lab = pigmentMixLab(colorA, colorB, index / PIGMENT_COARSE_STEPS);
+    samples.push(lab);
+    for (let axis = 0; axis < 3; axis += 1) {
+      min[axis] = Math.min(min[axis]!, lab[axis]!);
+      max[axis] = Math.max(max[axis]!, lab[axis]!);
+    }
+  }
+  const curve = { a: colorA, b: colorB, samples, min, max };
+  cache.set(key, curve);
+  return curve;
+}
+
+/**
+ * OKLab of `(1 - t)` parts A mixed with `t` parts B. spectral.js mix factors
+ * are the paint proportions (they are normalized); the library weights each
+ * by its own luminance and tinting strength internally to model how strongly
+ * a pigment colors the mix, so `t` is the share of B a painter measures out.
+ */
+function pigmentMixLab(
+  a: InstanceType<typeof spectral.Color>,
+  b: InstanceType<typeof spectral.Color>,
+  t: number
+): [number, number, number] {
+  if (t <= 0) return linearRgbToOklab(a.lRGB);
+  if (t >= 1) return linearRgbToOklab(b.lRGB);
+  return linearRgbToOklab(spectral.mix([a, 1 - t], [b, t]).lRGB);
+}
+
+function fitPigmentCurve(
+  pointLab: [number, number, number],
+  curve: PigmentCurve,
+  residualThreshold: number
+): { t: number; residual: number } | null {
+  // Reject when the candidate is farther than the threshold from the
+  // curve's bounding box (padded by a coarse step's worth of slack).
+  let boxDistanceSq = 0;
+  for (let axis = 0; axis < 3; axis += 1) {
+    const value = pointLab[axis]!;
+    const below = curve.min[axis]! - value;
+    const above = value - curve.max[axis]!;
+    const outside = Math.max(below, above, 0);
+    boxDistanceSq += outside * outside;
+  }
+  if (Math.sqrt(boxDistanceSq) > residualThreshold * 2) return null;
+
+  let bestIndex = 0;
+  let bestResidual = Infinity;
+  curve.samples.forEach((sample, index) => {
+    const residual = oklabDistance(pointLab, sample);
+    if (residual < bestResidual) {
+      bestResidual = residual;
+      bestIndex = index;
+    }
+  });
+  // Neighboring samples can sit up to a few hundredths apart where the curve
+  // moves fast (a dark pigment entering white), so refine anything that is
+  // plausibly within reach before rejecting it.
+  if (bestResidual > residualThreshold * 2) return null;
+
+  const coarseStep = 1 / PIGMENT_COARSE_STEPS;
+  let bestT = bestIndex * coarseStep;
+  const start = Math.max(0, bestT - coarseStep);
+  const end = Math.min(1, bestT + coarseStep);
+  for (let step = 0; step <= PIGMENT_FINE_STEPS; step += 1) {
+    const t = start + ((end - start) * step) / PIGMENT_FINE_STEPS;
+    const residual = oklabDistance(pointLab, pigmentMixLab(curve.a, curve.b, t));
+    if (residual < bestResidual) {
+      bestResidual = residual;
+      bestT = t;
+    }
+  }
+  return { t: bestT, residual: bestResidual };
+}
+
 /**
  * sRGB (0-255 per channel) to OKLab, per Björn Ottosson's published
  * reference (https://bottosson.github.io/posts/oklab/). L runs 0 (black) to
@@ -818,9 +943,18 @@ function projectOntoSegment(
  * color difference, with ~0.02 near the just-noticeable threshold.
  */
 export function rgbToOklab(rgb: readonly [number, number, number]): [number, number, number] {
-  const r = srgbChannelToLinear(rgb[0]);
-  const g = srgbChannelToLinear(rgb[1]);
-  const b = srgbChannelToLinear(rgb[2]);
+  return linearRgbToOklab([
+    srgbChannelToLinear(rgb[0]),
+    srgbChannelToLinear(rgb[1]),
+    srgbChannelToLinear(rgb[2])
+  ]);
+}
+
+/** Linear-light RGB (0-1 per channel, clamped) to OKLab. */
+function linearRgbToOklab(linear: readonly [number, number, number]): [number, number, number] {
+  const r = Math.min(1, Math.max(0, linear[0]));
+  const g = Math.min(1, Math.max(0, linear[1]));
+  const b = Math.min(1, Math.max(0, linear[2]));
 
   const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
   const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);

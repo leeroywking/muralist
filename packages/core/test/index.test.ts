@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import spectral from "spectral.js";
 import type { PaintBrandCatalog } from "@muralist/config";
 import { loadPaintBrandCatalog } from "@muralist/config";
 import {
@@ -807,18 +808,26 @@ test("classifyPaletteColors lets two colors that bracket each other both serve a
     assert.ok(!partners.includes("#020F1A"));
   }
 
-  // At the conservative preset both teals stay buy, and the light teal is
-  // the white + #3BB5B2 tint the old classifier could not see.
+  // At the conservative preset the deep teal stays buy. Variant B: on the
+  // pigment curve #3BB5B2 is itself a white tint of #038D8C (spectral.js
+  // puts 60% #038D8C + 40% white at #33B5B4), so it is a mix rather than the
+  // second buy teal the sRGB-only classifier needed, and both light teals
+  // come from white + the deep teal.
   const conservative = classifyPaletteColors(colors, {
     residualThreshold: 0.02,
     mixCoveragePercent: 0
   });
   const byId = new Map(conservative.map((entry) => [entry.id, entry]));
-  assert.equal(byId.get("#3BB5B2")?.classification, "buy");
   assert.equal(byId.get("#038D8C")?.classification, "buy");
+  assert.equal(byId.get("#3BB5B2")?.classification, "mix");
+  const midTeal = Object.fromEntries(
+    byId.get("#3BB5B2")!.recipe!.components.map((component) => [component.colorId, component.fraction])
+  );
+  assert.deepEqual(Object.keys(midTeal).sort(), ["#038D8C", "#FFFFFF"]);
+  assert.ok(Math.abs(midTeal["#038D8C"]! - 0.6) < 0.05, `#038D8C share ${midTeal["#038D8C"]}`);
   assert.deepEqual(
     byId.get("#92D8D7")!.recipe!.components.map((component) => component.colorId).sort(),
-    ["#3BB5B2", "#FFFFFF"]
+    ["#038D8C", "#FFFFFF"]
   );
 });
 
@@ -838,6 +847,117 @@ test("classifyPaletteColors does not pick a much rarer color as a mix partner", 
   const byId = new Map(classifications.map((entry) => [entry.id, entry]));
   assert.equal(byId.get("mid")?.classification, "buy");
   assert.equal(byId.get("accent")?.classification, "buy");
+});
+
+test("classifyPaletteColors detects a pigment-mix gradient that leaves the sRGB line", () => {
+  // Blue + yellow paint mixed with spectral.js (Kubelka-Munk) goes through
+  // green; the sRGB line between them goes through gray. Steps at 20/40/60/80
+  // parts yellow.
+  const blue = new spectral.Color("#002185");
+  const yellow = new spectral.Color("#FCD200");
+  const shares = [0, 0.2, 0.4, 0.6, 0.8, 1];
+  const row = shares.map((share) =>
+    share === 0 ? "#002185" : share === 1 ? "#FCD200" : spectral.mix([blue, 1 - share], [yellow, share]).toString().toUpperCase()
+  );
+  assert.equal(new Set(row).size, row.length);
+
+  // Sanity: the middle steps are far off the sRGB line, so only the pigment
+  // path can explain them.
+  const [b0, b1, b2] = hexToRgb("#002185");
+  const [y0, y1, y2] = hexToRgb("#FCD200");
+  for (const hex of row.slice(2, -2)) {
+    const lab = rgbToOklab(hexToRgb(hex));
+    let closest = Infinity;
+    for (let step = 0; step <= 1000; step += 1) {
+      const t = step / 1000;
+      const point = rgbToOklab([b0 + t * (y0 - b0), b1 + t * (y1 - b1), b2 + t * (y2 - b2)]);
+      closest = Math.min(closest, Math.hypot(lab[0] - point[0], lab[1] - point[1], lab[2] - point[2]));
+    }
+    assert.ok(closest > 0.07, `${hex} is ${closest} from the sRGB line`);
+  }
+
+  const colors = paletteFromHexCoverage(
+    row.map((hex, index) => [hex, index === 0 || index === row.length - 1 ? 30 : 10])
+  );
+  const first = row[0]!;
+  const last = row[row.length - 1]!;
+  for (const residualThreshold of OKLAB_PRESETS) {
+    const classifications = classifyPaletteColors(colors, {
+      residualThreshold,
+      mixCoveragePercent: 5
+    });
+    assertCoherent(classifications);
+    const byId = new Map(classifications.map((entry) => [entry.id, entry]));
+    assert.equal(byId.get(first)?.classification, "buy");
+    assert.equal(byId.get(last)?.classification, "buy");
+    row.slice(1, -1).forEach((hex, index) => {
+      const entry = byId.get(hex)!;
+      if (entry.classification === "absorb" && residualThreshold > OKLAB_PRESETS[0]!) {
+        assert.ok([first, last].includes(entry.absorbedIntoId!), `${hex} absorbs into an endpoint`);
+        return;
+      }
+      assert.equal(entry.classification, "mix", `${hex} at ${residualThreshold}`);
+      const fractions = Object.fromEntries(
+        entry.recipe!.components.map((component) => [component.colorId, component.fraction])
+      );
+      const expectedLast = shares[index + 1]!;
+      assert.ok(Math.abs((fractions[last] ?? 0) - expectedLast) < 0.03, `${hex} yellow share ${fractions[last]}`);
+      assert.ok(Math.abs((fractions[first] ?? 0) - (1 - expectedLast)) < 0.03, `${hex} blue share ${fractions[first]}`);
+    });
+  }
+});
+
+test("classifyPaletteColors never mixes a chromatic color from two neutrals", () => {
+  // White + black (or any two grays) mixes to gray on both the sRGB line and
+  // the pigment curve, so a recipe of two neutrals for a hued color is wrong.
+  const palettes: [string, number][][] = [
+    [
+      ["#FFFFFF", 50.7],
+      ["#92D8D7", 21.4],
+      ["#038D8C", 8.9],
+      ["#390E5D", 6.9],
+      ["#FAD678", 6.0],
+      ["#020F1A", 3.3],
+      ["#3BB5B2", 2.7],
+      ["#C1A76C", 0.1]
+    ],
+    [
+      ["#FFFFFF", 30],
+      ["#111111", 25],
+      ["#808080", 12],
+      ["#C03030", 10],
+      ["#30A050", 10],
+      ["#7030A0", 8],
+      ["#4D4D4D", 5]
+    ]
+  ];
+  const chroma = (hex: string) => {
+    const [, a, b] = rgbToOklab(hexToRgb(hex));
+    return Math.hypot(a, b);
+  };
+  for (const entries of palettes) {
+    const colors = paletteFromHexCoverage(entries);
+    for (const residualThreshold of OKLAB_PRESETS) {
+      for (const dominantCoveragePercent of [15, 100]) {
+        const classifications = classifyPaletteColors(colors, {
+          residualThreshold,
+          mixCoveragePercent: 0,
+          dominantCoveragePercent
+        });
+        assertCoherent(classifications);
+        for (const entry of classifications) {
+          if (entry.classification !== "mix") continue;
+          const partners = entry.recipe!.components.map((component) => component.colorId);
+          if (partners.every((partner) => chroma(partner) < 0.02)) {
+            assert.ok(
+              chroma(entry.id) < 0.02 + residualThreshold,
+              `${entry.id} mixed from neutrals ${partners.join(" + ")} at ${residualThreshold}`
+            );
+          }
+        }
+      }
+    }
+  }
 });
 
 test("applyClassification folds absorbed pixel counts into the keeper and surfaces mix recipes", () => {

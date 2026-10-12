@@ -13,7 +13,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@muralist/config": "0.1.0"
+    "@muralist/config": "0.1.0",
+    "spectral.js": "3.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
