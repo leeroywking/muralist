@@ -511,6 +511,10 @@
   --on-band: #fafaf8;
   --on-band-muted: #b4b4ae;
 
+  /* Accent: electric teal. Only ever drawn on off-black, or edged in
+     off-black where it meets a light surface (1.8:1 on white alone). */
+  --accent-hi: #4cc9f0;
+
   /* Interactive */
   --primary: #161616;
   --primary-hover: #3a3a37;
@@ -521,7 +525,7 @@
   --selected: #161616;
   --focus: #161616;
   --badge-bg: #161616;
-  --badge-ink: #fafaf8;
+  --badge-ink: var(--accent-hi);
   --neutral-ink: #3e3e3a;
   --neutral-soft: rgba(22, 22, 22, 0.04);
   --disabled-bg: rgba(22, 22, 22, 0.12);
@@ -1588,4 +1592,64 @@ h1 {
   display: inline-flex;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+/* ---- Accent (teal) ------------------------------------------------------
+   Teal sits directly on off-black (header band, dark buttons, dark pills).
+   On light surfaces it is always sandwiched between off-black edges:
+   inner ink ring, teal ring, outer ink ring. Never a large fill. */
+:focus-visible,
+.swatch-card:has(.swatch-toggle:focus-visible),
+.project-tile:has(.project-tile-open:focus-visible) {
+  outline: 3px solid var(--accent-hi);
+  outline-offset: 2px;
+  box-shadow:
+    0 0 0 2px var(--ink),
+    0 0 0 7px var(--ink);
+}
+.swatch-toggle:focus-visible,
+.project-tile-open:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.site-header :focus-visible {
+  outline-color: var(--accent-hi);
+  box-shadow: none;
+}
+.site-nav a:hover,
+.header-session-link:hover {
+  color: var(--accent-hi);
+}
+.merge-button:hover:not(:disabled),
+.pdf-button:hover:not(:disabled),
+.signin-primary:hover,
+.projects-new-button:hover:not(:disabled),
+.projects-cta:hover {
+  box-shadow: inset 0 0 0 2px var(--accent-hi);
+}
+.merge-button:hover:focus-visible,
+.pdf-button:hover:focus-visible,
+.signin-primary:hover:focus-visible,
+.projects-new-button:hover:focus-visible,
+.projects-cta:hover:focus-visible {
+  box-shadow:
+    inset 0 0 0 2px var(--accent-hi),
+    0 0 0 2px var(--ink),
+    0 0 0 7px var(--ink);
+}
+.swatch-card-selected,
+.keeper-chip {
+  border-color: var(--ink);
+  outline: 3px solid var(--accent-hi);
+  outline-offset: 0;
+  box-shadow: 0 0 0 4px var(--ink);
+}
+.sensitivity-preset.is-active,
+.projects-status-tab.is-active {
+  color: var(--accent-hi);
+}
+.background-toggle.is-active {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--accent-hi);
 }
