@@ -489,52 +489,69 @@
   }
 }
 
-/* Site palette. All site-chrome colors route through these tokens; artwork
-   colors (swatches, chips, previews) are user data and never use them. */
+/* Site palette — dark mode. All site-chrome colors route through these
+   tokens; artwork colors (swatches, chips, previews) are user data and never
+   use them. The in-page field sheet (.print-summary) stays paper-light. */
 :root {
-  /* Neutrals: off-white surfaces, off-black ink */
-  --bg: #f2f2ee;
-  --bg-accent: #e9e9e4;
-  --surface: #fafaf8;
-  --surface-raised: #fdfdfb;
-  --surface-sunken: #f5f5f2;
+  color-scheme: dark;
+
+  /* Neutrals: off-black page, lifted surfaces, off-white ink */
+  --bg: #141414;
+  --bg-accent: #0e0e0e;
+  --surface: #1c1c1c;
+  --surface-raised: #232323;
+  --surface-sunken: #181818;
   --card: var(--surface);
-  --ink: #161616;
-  --muted: #5a5a55;
-  --line: rgba(22, 22, 22, 0.14);
-  --line-strong: rgba(22, 22, 22, 0.3);
-  --shadow: rgba(22, 22, 22, 0.06);
-  --eyebrow: var(--muted);
+  --ink: #f2f2ee;
+  --muted: #a8a8a2;
+  --line: rgba(242, 242, 238, 0.12);
+  --line-strong: rgba(242, 242, 238, 0.26);
+  --shadow: rgba(0, 0, 0, 0.45);
+  --eyebrow: var(--accent-hi);
 
-  /* Dark band (site header) */
-  --band: #161616;
-  --on-band: #fafaf8;
-  --on-band-muted: #b4b4ae;
+  /* Header band (a step darker than the page) */
+  --band: #0e0e0e;
+  --on-band: #f2f2ee;
+  --on-band-muted: #a8a8a2;
 
-  /* Accent: electric teal. Only ever drawn on off-black, or edged in
-     off-black where it meets a light surface (1.8:1 on white alone). */
+  /* Accent: electric teal. ~8-10:1 on these surfaces. Lines, text and
+     faint tints only — never a large fill. */
   --accent-hi: #4cc9f0;
+  --accent-hi-hover: #8fdcf5;
+  --accent-tint: rgba(76, 201, 240, 0.1);
+  --accent-tint-strong: rgba(76, 201, 240, 0.18);
 
   /* Interactive */
-  --primary: #161616;
-  --primary-hover: #3a3a37;
-  --on-primary: #fafaf8;
-  --accent-ink: #161616;
-  --accent-line: rgba(22, 22, 22, 0.45);
-  --accent-soft: rgba(22, 22, 22, 0.06);
-  --selected: #161616;
-  --focus: #161616;
-  --badge-bg: #161616;
+  --primary: var(--accent-tint);
+  --primary-hover: var(--accent-tint-strong);
+  --on-primary: var(--accent-hi);
+  --accent-ink: var(--ink);
+  --accent-line: rgba(242, 242, 238, 0.4);
+  --accent-soft: rgba(242, 242, 238, 0.06);
+  --selected: var(--accent-hi);
+  --focus: var(--accent-hi);
+  --badge-bg: #0e0e0e;
   --badge-ink: var(--accent-hi);
-  --neutral-ink: #3e3e3a;
-  --neutral-soft: rgba(22, 22, 22, 0.04);
-  --disabled-bg: rgba(22, 22, 22, 0.12);
-  --disabled-ink: rgba(22, 22, 22, 0.5);
+  --neutral-ink: #d6d6d0;
+  --neutral-soft: rgba(242, 242, 238, 0.04);
+  --disabled-bg: rgba(242, 242, 238, 0.1);
+  --disabled-ink: rgba(242, 242, 238, 0.45);
 
-  /* Semantic (muted) */
-  --danger: #8c2a22;
-  --danger-line: rgba(140, 42, 34, 0.45);
-  --danger-soft: rgba(140, 42, 34, 0.07);
+  /* Semantic (muted, tuned for dark) */
+  --danger: #f08a80;
+  --danger-line: rgba(240, 138, 128, 0.45);
+  --danger-soft: rgba(240, 138, 128, 0.08);
+  --warn-ink: #e8c878;
+  --warn-line: rgba(232, 200, 120, 0.4);
+  --warn-soft: rgba(232, 200, 120, 0.08);
+}
+
+/* The field sheet is a sheet of paper on screen and in print: light
+   tokens inside it so its warning box and controls stay legible. */
+.print-summary {
+  color-scheme: light;
+  --ink: #111111;
+  --focus: #111111;
   --warn-ink: #5c4410;
   --warn-line: rgba(140, 104, 24, 0.4);
   --warn-soft: rgba(176, 132, 32, 0.1);
@@ -1595,61 +1612,86 @@ h1 {
 }
 
 /* ---- Accent (teal) ------------------------------------------------------
-   Teal sits directly on off-black (header band, dark buttons, dark pills).
-   On light surfaces it is always sandwiched between off-black edges:
-   inner ink ring, teal ring, outer ink ring. Never a large fill. */
+   Everything is dark, so teal is drawn directly: links, eyebrows, key
+   numbers, selected/active states, MIX badge, focus rings, and an outlined
+   teal primary button. The only light surface left is the paper field sheet
+   (.print-summary); teal there is edged in off-black (1.8:1 on white alone). */
+a {
+  color: var(--accent-hi);
+}
+a:hover {
+  color: var(--accent-hi-hover);
+}
 :focus-visible,
 .swatch-card:has(.swatch-toggle:focus-visible),
 .project-tile:has(.project-tile-open:focus-visible) {
-  outline: 3px solid var(--accent-hi);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
-  box-shadow:
-    0 0 0 2px var(--ink),
-    0 0 0 7px var(--ink);
 }
 .swatch-toggle:focus-visible,
 .project-tile-open:focus-visible {
   outline: none;
-  box-shadow: none;
 }
-.site-header :focus-visible {
-  outline-color: var(--accent-hi);
-  box-shadow: none;
+.print-summary :focus-visible {
+  outline: 3px solid var(--accent-hi);
+  outline-offset: 2px;
+  box-shadow:
+    0 0 0 2px #111111,
+    0 0 0 7px #111111;
 }
 .site-nav a:hover,
 .header-session-link:hover {
   color: var(--accent-hi);
 }
-.merge-button:hover:not(:disabled),
-.pdf-button:hover:not(:disabled),
-.signin-primary:hover,
-.projects-new-button:hover:not(:disabled),
-.projects-cta:hover {
-  box-shadow: inset 0 0 0 2px var(--accent-hi);
+.summary-strip strong,
+.about-card h2,
+.signin-heading {
+  color: var(--accent-hi);
 }
-.merge-button:hover:focus-visible,
-.pdf-button:hover:focus-visible,
-.signin-primary:hover:focus-visible,
-.projects-new-button:hover:focus-visible,
-.projects-cta:hover:focus-visible {
-  box-shadow:
-    inset 0 0 0 2px var(--accent-hi),
-    0 0 0 2px var(--ink),
-    0 0 0 7px var(--ink);
+/* Primary actions: teal outline + teal text on a faint teal tint. */
+.merge-button,
+.pdf-button,
+.signin-primary,
+.projects-new-button,
+.projects-cta {
+  box-shadow: inset 0 0 0 1.5px var(--accent-hi);
+}
+.merge-button:disabled,
+.pdf-button:disabled,
+.projects-new-button:disabled {
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.signin-primary:hover,
+.projects-cta:hover {
+  color: var(--accent-hi);
 }
 .swatch-card-selected,
 .keeper-chip {
-  border-color: var(--ink);
-  outline: 3px solid var(--accent-hi);
-  outline-offset: 0;
-  box-shadow: 0 0 0 4px var(--ink);
+  border-color: var(--accent-hi);
+  box-shadow: inset 0 0 0 1px var(--accent-hi);
+}
+/* Swatch blocks are artwork colors; a hairline keeps near-black ones
+   distinct from the dark card. */
+.swatch {
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.selected-chip-swatch {
+  border-color: var(--line-strong);
+}
+.swatch-card-mix::after {
+  border: 1px solid var(--accent-hi);
+}
+.mix-badge {
+  color: var(--accent-hi);
 }
 .sensitivity-preset.is-active,
 .projects-status-tab.is-active {
   color: var(--accent-hi);
+  border-color: var(--accent-hi);
+  box-shadow: inset 0 0 0 1px var(--accent-hi);
 }
 .background-toggle.is-active {
-  border-color: var(--primary);
-  background: var(--primary);
+  border-color: var(--accent-hi);
+  background: var(--accent-tint);
   color: var(--accent-hi);
 }
