@@ -122,3 +122,62 @@ Core (`classifyPaletteColors`, new `backgroundIds` option, backward compatible):
 Web: Auto-combine passes the background set (it is keyed by color id, so the pre-combine snapshot path needs nothing extra). Marking a color as background *after* an Auto-combine drops the recipes that use it (or mix it) and makes their targets buy, with a message suggesting another Auto-combine; it does not silently re-run classification, which could change the palette under settings the user has not applied. `applyValidMixesToCoverage` (in `apps/web/app/autoCombine.ts`) skips only recipes whose target or components are not in the paintable palette.
 
 Tests: `packages/core/test/index.test.ts` (background never a partner/target/absorbed across presets, thresholds and dominant settings on the teal, FlowerRepeat and greys palettes, locked or not; FlowerRepeat light yellow not made from background white; near-duplicates fold into the background; edge pixels absorb into it at mix 5% and stay buy at 0%) and `apps/web/app/autoCombine.test.ts` (Auto-combine with background ids, `dropRecipesUsingColor`, `applyValidMixesToCoverage`).
+
+## Browser-independent analysis (2026-10-12)
+
+**Rule (user):** "I don't want the browser-modified file in our key path at all. If what is rendered to the user contains privacy noise that's fine, as long as we aren't running calculations against it." No calculation — palette survey/clustering, classification input, coverage, reduced-preview flattening, anything that feeds the estimate or maquette — reads pixels from a browser canvas, ImageBitmap or `<img>` readback. Canvas is display-only.
+
+**Why.** The same file gave three different palettes: FlowerRepeat came out as `#FAF0F0/#45AFB1/#F9D45D` in one user's browser, `#FAFBFB/#45B0B3/#F9D55F` in headless Chrome, and `#FCEFF1/#63ACB1/#F2D66D` in Firefox. There were four causes:
+- FlowerRepeat, Coral and the octopus are Procreate exports with an embedded Display P3 ICC profile, and browsers color-manage them differently. Firefox's `#63ACB1` is the raw, unconverted P3 teal.
+- `drawImage` from 3000 px down to `maxDimension` uses a resampling filter that differs per browser.
+- Privacy canvas noise (Safari AFP, Brave, Firefox RFP) randomizes `getImageData`.
+- JPEG decoders round differently.
+
+**Pipeline** (`apps/web/app/imageAnalysis.ts` → `@muralist/core`). It runs in a Web Worker (`analysisWorker.ts`, created by `analysisClient.ts`) and reads the original file's bytes:
+1. **Decode it ourselves.**
+   - JPEG: `jpeg-js@0.4.4` (BSD-3-Clause).
+   - PNG: `fast-png@8.0.0` (MIT; brings `fflate` and `iobuffer`, both MIT). Handles any bit depth, gray, indexed and tRNS.
+   - WebP: `@jsquash/webp@1.5.0` (Apache-2.0, libwebp WASM). Loaded lazily; webpack emits the `.wasm` under the basePath. Verified in the static export, in a worker, in Chrome and Firefox.
+   - Exact versions are pinned in `apps/web/package.json`.
+2. **ICC → sRGB** (`packages/core/src/icc.ts`). The ICC profile comes from the JPEG APP2 `ICC_PROFILE` chunks (reassembled in order), PNG `iCCP` (inflated by fast-png) or the WebP `ICCP` chunk.
+   - Supported: generic matrix/TRC RGB profiles, i.e. `rXYZ/gXYZ/bXYZ` plus `rTRC/gTRC/bTRC` as `curv` (identity, gamma or table) or `para` (types 0–4). That covers Display P3, Adobe RGB, ProPhoto and sRGB.
+   - The colorants are D50 PCS values. Old v2 profiles whose colorants sum to their media white rather than D50 are first Bradford-adapted from that white to D50.
+   - XYZ(D50) → linear sRGB uses the Bradford-adapted sRGB matrix. Rendering is relative colorimetric with hard clipping.
+   - Encoding back to 8 bits uses exact threshold tables, so it is deterministic.
+   - A profile that is sRGB in all but name passes pixels through unchanged.
+   - Untagged images are treated as sRGB.
+   - Unsupported profiles (LUT-only, CMYK, gray, Lab PCS) are treated as sRGB, with a small non-blocking note under the upload.
+3. **Downscale ourselves** (`packages/core/src/raster.ts`, `downscaleBoxRgba`).
+   - Area-average (box) filter with exact fractional coverage. Source and target are mapped onto a common integer grid, so every overlap weight is an integer.
+   - Colors are averaged alpha-weighted, with all sums exact in IEEE doubles (below 2^53 up to about 100 MP), then rounded half up. The result is bit-identical in every engine.
+   - The analysis size keeps the old `maxDimension` semantics: long edge 320, never upscaled, same rounding. PR #10 (`feat/palette-survey-from-original`, not merged) explored surveying at full resolution; this change keeps 320 so the classifier's coverage calibration is unchanged.
+4. **EXIF orientation** (JPEG APP1, and WebP `EXIF`). It is applied after the downscale, which is exact because a box filter commutes with flips and transposes. This matches the browsers' `image-orientation: from-image` geometry for the reduced preview. PNG `eXIf` is not applied.
+5. **Survey** (`packages/core/src/palette.ts`, `surveyPalette`). Moved verbatim from `PrototypeApp.tsx`, so the clustering math is unchanged.
+
+**Downstream changes:**
+- `sourcePixelsRef` holds these pixels. Full reset re-surveys the same pixels.
+- The reduced preview / maquette image is `flattenPixelsToPalette` (core), encoded to PNG with fast-png. There is no `toDataURL` readback.
+- A re-opened project decodes its stored sanitized JPEG with the same pipeline (pixels-only mode).
+- The analysis input is now the original upload, not the 640 px sanitized JPEG. That restores "palette extraction reads from the original upload only".
+
+**Display/persistence canvases.** `uploadPipeline.ts` still re-encodes the sanitized and thumbnail JPEGs on a canvas. It now explicitly requests `getContext("2d", { colorSpace: "srgb" })` and `createImageBitmap(file, { colorSpaceConversion: "default" })`. These artifacts are never analysis inputs.
+
+**SVG is the one remaining exception.** No browser-free SVG rasterizer exists without a heavy dependency, so SVG keeps the isolated-`<img>` rasterize and an sRGB canvas readback (`analyzeSvgViaCanvas` in `analysisClient.ts`). Its palette can differ slightly between browsers; a test file gave `#EFBF41` in Chrome and `#EFBF40` in Firefox. Proposed follow-up: `@resvg/resvg-wasm` (MPL-2.0, a multi-megabyte WASM, loaded lazily for SVG only).
+
+**Worker.** `new Worker(new URL("./analysisWorker.ts", import.meta.url))` is written inline. PR #12's module worker failed on the static export because it built the URL in a separate variable, so webpack shipped the raw `.ts` file as an asset. With the inline form, webpack emits a JS chunk under the basePath. This avoids PR #12's Blob-URL workaround, which duplicated the code as a string. There is no main-thread fallback, so a broken worker build fails loudly. `window.__muralistAnalysis` records `{ via, format, color, timingsMs }` for verification.
+
+**Tests:**
+- `packages/core/test/imageAnalysis.test.ts`:
+  - P3 primaries clip to sRGB primaries, and P3 white, black and greys stay neutral.
+  - In-gamut colors match an independent D65 reference to ±1.
+  - Determinism, and every 8-bit sRGB value round-trips.
+  - sRGB-profile identity detection, `curv` gamma and table curves, legacy unadapted v2 colorants, and unsupported profiles left untouched with a note.
+  - JPEG and WebP metadata parsing, box downscale exactness, all 8 orientations, and downscale/orientation commutation.
+  - The full pipeline on a P3-tagged synthetic image, through to classification.
+- `apps/web/app/imageAnalysis.test.ts`:
+  - JPEG, PNG and WebP are encoded in-test, with the authored P3 profile embedded.
+  - Byte-identical palettes across runs, with exact expected values.
+  - Auto-combine is identical at Balanced/5% and Aggressive/0%.
+  - The analysis modules use no canvas, ImageBitmap or `<img>`. The suite itself runs in Node, which has no DOM.
+- The P3 profile is authored in-test (`packages/core/test/iccProfileBuilder.ts`, fixture `display-p3-authored.icc`). The user's artwork is not committed.
+- `npx tsx apps/web/scripts/analyze-file.ts <image>` runs the exact production pipeline in Node, to compare against the app.
