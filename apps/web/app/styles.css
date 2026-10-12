@@ -17,7 +17,7 @@
   font-size: 0.9rem;
   border-radius: 6px;
   border: 1px solid var(--line);
-  background: rgba(255, 250, 243, 0.9);
+  background: var(--surface-raised);
   color: var(--ink);
 }
 .field-inline > input[type="number"] {
@@ -33,7 +33,7 @@
 .print-button,
 .pdf-button {
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--surface-raised);
   color: var(--ink);
   padding: 0.9rem 1rem;
   border-radius: 8px;
@@ -42,8 +42,8 @@
 }
 .pdf-button {
   border: 0;
-  background: linear-gradient(135deg, var(--accent), #dd7d33);
-  color: white;
+  background: var(--primary);
+  color: var(--on-primary);
   border-radius: 14px;
 }
 .print-button-fallback {
@@ -107,9 +107,9 @@
   font-size: 1.2rem;
 }
 .ratio-warning {
-  border: 1px solid rgba(201, 93, 28, 0.45);
-  background: rgba(201, 93, 28, 0.1);
-  color: #4f250d;
+  border: 1px solid var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn-ink);
   padding: 0.75rem 0.9rem;
   border-radius: 8px;
   margin-bottom: 1rem;
@@ -489,17 +489,84 @@
   }
 }
 
+/* Site palette. All site-chrome colors route through these tokens; artwork
+   colors (swatches, chips, previews) are user data and never use them. */
 :root {
-  --bg: #f4ecdf;
-  --bg-accent: #e5d4ba;
-  --ink: #17231a;
-  --muted: #526056;
-  --card: rgba(255, 250, 243, 0.84);
-  --line: rgba(23, 35, 26, 0.12);
-  --accent: #c95d1c;
-  --accent-2: #2e8162;
-  --accent-3: #f0a13d;
-  --shadow: rgba(35, 42, 32, 0.12);
+  /* Neutrals: off-white surfaces, off-black ink */
+  --bg: #f2f2ee;
+  --bg-accent: #e9e9e4;
+  --surface: #fafaf8;
+  --surface-raised: #fdfdfb;
+  --surface-sunken: #f5f5f2;
+  --card: var(--surface);
+  --ink: #161616;
+  --muted: #5a5a55;
+  --line: rgba(22, 22, 22, 0.14);
+  --line-strong: rgba(22, 22, 22, 0.3);
+  --shadow: rgba(22, 22, 22, 0.06);
+  --eyebrow: var(--muted);
+
+  /* Dark band (site header) */
+  --band: #161616;
+  --on-band: #fafaf8;
+  --on-band-muted: #b4b4ae;
+
+  /* Accent: electric teal. Only ever drawn on off-black, or edged in
+     off-black where it meets a light surface (1.8:1 on white alone). */
+  --accent-hi: #4cc9f0;
+
+  /* Interactive */
+  --primary: #161616;
+  --primary-hover: #3a3a37;
+  --on-primary: #fafaf8;
+  --accent-ink: #161616;
+  --accent-line: rgba(22, 22, 22, 0.45);
+  --accent-soft: rgba(22, 22, 22, 0.06);
+  --selected: #161616;
+  --focus: #161616;
+  --badge-bg: #161616;
+  --badge-ink: var(--accent-hi);
+  --neutral-ink: #3e3e3a;
+  --neutral-soft: rgba(22, 22, 22, 0.04);
+  --disabled-bg: rgba(22, 22, 22, 0.12);
+  --disabled-ink: rgba(22, 22, 22, 0.5);
+
+  /* Semantic (muted) */
+  --danger: #8c2a22;
+  --danger-line: rgba(140, 42, 34, 0.45);
+  --danger-soft: rgba(140, 42, 34, 0.07);
+  --warn-ink: #5c4410;
+  --warn-line: rgba(140, 104, 24, 0.4);
+  --warn-soft: rgba(176, 132, 32, 0.1);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.site-header :focus-visible {
+  outline-color: var(--on-band);
+}
+
+/* These toggles sit inside overflow:hidden cards (and over artwork colors),
+   so the focus ring is drawn around the whole card instead. */
+.swatch-toggle:focus-visible,
+.project-tile-open:focus-visible {
+  outline: none;
+}
+.swatch-card:has(.swatch-toggle:focus-visible),
+.project-tile:has(.project-tile-open:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.merge-button:hover:not(:disabled),
+.pdf-button:hover:not(:disabled),
+.signin-primary:hover,
+.projects-new-button:hover:not(:disabled),
+.projects-cta:hover {
+  background: var(--primary-hover);
 }
 
 * {
@@ -511,10 +578,7 @@ body {
   margin: 0;
   min-height: 100%;
   font-family: Georgia, "Times New Roman", serif;
-  background:
-    radial-gradient(circle at top left, rgba(187, 90, 42, 0.18), transparent 26%),
-    radial-gradient(circle at bottom right, rgba(62, 127, 97, 0.18), transparent 24%),
-    linear-gradient(180deg, var(--bg), var(--bg-accent));
+  background: var(--bg);
   color: var(--ink);
 }
 
@@ -530,11 +594,14 @@ body {
   width: min(1280px, calc(100vw - 2rem));
   margin: 0 auto;
   padding: 1rem 0 0;
+  background: var(--band);
+  box-shadow: 0 0 0 100vmax var(--band);
+  clip-path: inset(0 -100vmax -0.85rem -100vmax);
 }
 
 .brand-link,
 .site-nav a {
-  color: var(--ink);
+  color: var(--on-band);
   text-decoration: none;
 }
 
@@ -560,9 +627,7 @@ body {
   padding: 2.5rem;
   border: 1px solid var(--line);
   border-radius: 28px;
-  background:
-    radial-gradient(circle at top right, rgba(240, 161, 61, 0.18), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.32));
+  background: var(--surface);
   box-shadow: 0 20px 54px var(--shadow);
 }
 
@@ -577,7 +642,7 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.16em;
   font-size: 0.8rem;
-  color: var(--accent-2);
+  color: var(--eyebrow);
 }
 
 h1 {
@@ -605,7 +670,7 @@ h1 {
   padding: 1.4rem;
   border-radius: 22px;
   border: 1px solid var(--line);
-  background: rgba(255, 248, 239, 0.85);
+  background: var(--surface-sunken);
 }
 
 .metrics,
@@ -662,10 +727,9 @@ h1 {
   display: grid;
   gap: 0.45rem;
   padding: 2rem;
-  border: 1.5px dashed rgba(201, 93, 28, 0.42);
+  border: 1.5px dashed var(--line-strong);
   border-radius: 24px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.85), rgba(255, 246, 235, 0.88));
+  background: var(--surface-raised);
   cursor: pointer;
 }
 
@@ -713,9 +777,9 @@ h1 {
 .field select {
   width: 100%;
   padding: 0.85rem 0.95rem;
-  border: 1px solid rgba(23, 35, 26, 0.18);
+  border: 1px solid var(--line-strong);
   border-radius: 14px;
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--surface-raised);
   color: var(--ink);
   font: inherit;
 }
@@ -730,7 +794,7 @@ h1 {
 }
 
 .status.error {
-  color: #a52d25;
+  color: var(--danger);
 }
 
 .preview-frame,
@@ -740,7 +804,7 @@ h1 {
   border-radius: 24px;
   overflow: hidden;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--surface-raised);
 }
 
 .preview-image {
@@ -748,7 +812,7 @@ h1 {
   width: 100%;
   max-height: 460px;
   object-fit: contain;
-  background: linear-gradient(180deg, rgba(229, 212, 186, 0.55), rgba(255, 255, 255, 0.55));
+  background: var(--bg-accent);
 }
 
 .preview-meta,
@@ -769,7 +833,7 @@ h1 {
   margin-top: 1rem;
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: rgba(247, 238, 226, 0.86);
+  background: var(--surface-sunken);
 }
 
 .merge-toolbar {
@@ -779,7 +843,7 @@ h1 {
   padding: 1rem 1.1rem;
   border: 1px solid var(--line);
   border-radius: 18px;
-  background: rgba(248, 240, 230, 0.86);
+  background: var(--surface-sunken);
   grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
 }
 
@@ -826,33 +890,33 @@ h1 {
 
 .merge-button {
   border: 0;
-  background: linear-gradient(135deg, var(--accent), #dd7d33);
-  color: white;
+  background: var(--primary);
+  color: var(--on-primary);
 }
 
 .save-button,
 .restore-button {
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--surface-raised);
   color: var(--ink);
 }
 
 .auto-combine-button {
-  border: 1px solid rgba(201, 93, 28, 0.55);
-  background: rgba(201, 93, 28, 0.08);
-  color: #5a2a0b;
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
 }
 
 .reset-button {
-  border: 1px solid rgba(120, 120, 130, 0.45);
-  background: rgba(120, 120, 130, 0.08);
-  color: #444;
+  border: 1px solid var(--line-strong);
+  background: var(--neutral-soft);
+  color: var(--neutral-ink);
 }
 
 .full-reset-button {
-  border: 1px solid rgba(176, 58, 46, 0.5);
-  background: rgba(176, 58, 46, 0.08);
-  color: #7a241b;
+  border: 1px solid var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .merge-button:disabled,
@@ -879,13 +943,14 @@ h1 {
   padding: 0.7rem 0.85rem;
   border-radius: 999px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--surface-raised);
+  color: var(--ink);
   cursor: pointer;
 }
 
 .keeper-chip {
-  border-color: rgba(46, 129, 98, 0.5);
-  box-shadow: inset 0 0 0 1px rgba(46, 129, 98, 0.2);
+  border-color: var(--selected);
+  box-shadow: inset 0 0 0 1px var(--selected);
 }
 
 .selected-chip small {
@@ -898,7 +963,7 @@ h1 {
   width: 18px;
   height: 18px;
   border-radius: 999px;
-  border: 1px solid rgba(23, 35, 26, 0.12);
+  border: 1px solid var(--line);
 }
 
 .empty-selection {
@@ -921,12 +986,12 @@ h1 {
   overflow: hidden;
   border-radius: 20px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--surface-raised);
 }
 
 .swatch-card-selected {
-  border-color: rgba(201, 93, 28, 0.5);
-  box-shadow: inset 0 0 0 1px rgba(201, 93, 28, 0.22);
+  border-color: var(--selected);
+  box-shadow: inset 0 0 0 1px var(--selected);
 }
 
 .swatch-toggle {
@@ -978,7 +1043,7 @@ h1 {
   padding: 1rem 1.1rem;
   border-radius: 18px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.86);
+  background: var(--surface-raised);
 }
 
 .about-card h2 {
@@ -1024,7 +1089,7 @@ h1 {
   border-radius: 12px;
   padding: 1rem 1.25rem;
   margin: 1.5rem 0;
-  background: rgba(255, 255, 255, 0.55);
+  background: var(--surface-sunken);
 }
 .pro-settings-header {
   display: flex;
@@ -1045,7 +1110,7 @@ h1 {
 .pro-settings-toggle {
   flex-shrink: 0;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--surface-raised);
   color: var(--ink);
   padding: 0.5rem 0.9rem;
   border-radius: 8px;
@@ -1057,7 +1122,7 @@ h1 {
   gap: 1rem;
   margin-top: 1rem;
   padding-top: 1rem;
-  border-top: 1px dashed rgba(17, 17, 17, 0.12);
+  border-top: 1px dashed var(--line);
 }
 .pro-settings-row {
   display: grid;
@@ -1079,7 +1144,7 @@ h1 {
 }
 .sensitivity-preset {
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--surface-raised);
   color: var(--ink);
   padding: 0.45rem 0.8rem;
   border-radius: 999px;
@@ -1088,8 +1153,8 @@ h1 {
   font-size: 0.85rem;
 }
 .sensitivity-preset.is-active {
-  background: linear-gradient(135deg, var(--accent), #dd7d33);
-  color: white;
+  background: var(--primary);
+  color: var(--on-primary);
   border-color: transparent;
 }
 .pro-settings-custom {
@@ -1118,8 +1183,8 @@ h1 {
 }
 
 .swatch-card-mix {
-  border: 1px solid rgba(201, 93, 28, 0.55);
-  background: rgba(201, 93, 28, 0.06);
+  border: 1px solid var(--line-strong);
+  background: var(--neutral-soft);
   position: relative;
 }
 .swatch-card-mix::after {
@@ -1127,8 +1192,8 @@ h1 {
   position: absolute;
   top: 0.4rem;
   right: 0.5rem;
-  background: linear-gradient(135deg, var(--accent), #dd7d33);
-  color: white;
+  background: var(--badge-bg);
+  color: var(--badge-ink);
   text-transform: uppercase;
   font-size: 0.65rem;
   letter-spacing: 0.08em;
@@ -1138,14 +1203,14 @@ h1 {
 .mix-recipe-line {
   margin: 0.35rem 0 0.2rem;
   font-size: 0.82rem;
-  color: rgba(17, 17, 17, 0.76);
+  color: var(--muted);
 }
 .mix-badge {
   font-size: 0.7rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #5a2a0b;
+  color: var(--ink);
   margin-right: 0.35rem;
 }
 
@@ -1158,14 +1223,14 @@ h1 {
   margin: 0.35rem 0 0.1rem;
   padding: 0.35rem 0.6rem;
   border-radius: 999px;
-  border: 1px solid rgba(120, 120, 130, 0.45);
-  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-raised);
   color: var(--ink);
 }
 .background-toggle.is-active {
-  border-color: rgba(46, 129, 98, 0.55);
-  background: rgba(46, 129, 98, 0.12);
-  color: #1e5a42;
+  border-color: var(--selected);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
 }
 .background-note {
   margin: 0.25rem 0 0.2rem;
@@ -1215,7 +1280,7 @@ h1 {
   padding: 0.85rem 1rem;
   border-radius: 10px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.95);
+  background: var(--surface-raised);
   color: var(--ink);
   font: inherit;
   font-weight: 600;
@@ -1225,7 +1290,7 @@ h1 {
 }
 .signin-provider:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(17, 17, 17, 0.08);
+  box-shadow: 0 2px 8px var(--shadow);
 }
 .signin-provider:disabled {
   cursor: not-allowed;
@@ -1249,8 +1314,8 @@ h1 {
   display: inline-block;
   padding: 0.75rem 1.1rem;
   border-radius: 10px;
-  background: linear-gradient(135deg, var(--accent), #dd7d33);
-  color: white;
+  background: var(--primary);
+  color: var(--on-primary);
   text-decoration: none;
   font-weight: 600;
 }
@@ -1258,7 +1323,7 @@ h1 {
   padding: 0.75rem 1.1rem;
   border-radius: 10px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.95);
+  background: var(--surface-raised);
   color: var(--ink);
   cursor: pointer;
   font: inherit;
@@ -1266,20 +1331,20 @@ h1 {
 }
 .signin-error {
   margin: 0;
-  color: #8a1d1d;
+  color: var(--danger);
   font-size: 0.9rem;
 }
 
 /* ---- Header session link ------------------------------------------------ */
 .header-session-link {
   font-size: 0.9rem;
-  color: var(--muted);
+  color: var(--on-band-muted);
   text-decoration: none;
   margin-left: auto;
   padding-left: 0.75rem;
 }
 .header-session-link:hover {
-  color: var(--ink);
+  color: var(--on-band);
   text-decoration: underline;
 }
 .header-session-loading {
@@ -1305,13 +1370,13 @@ h1 {
 }
 .projects-error {
   margin: 0;
-  color: #8a1d1d;
+  color: var(--danger);
   font-size: 0.95rem;
 }
 .projects-overlimit-banner {
-  background: rgba(240, 161, 61, 0.18);
-  border: 1px solid rgba(201, 93, 28, 0.35);
-  color: #4f2a0b;
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  color: var(--warn-ink);
   padding: 0.85rem 1rem;
   border-radius: 12px;
   font-size: 0.95rem;
@@ -1345,7 +1410,7 @@ h1 {
   padding: 0.25rem;
   border-radius: 999px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--surface-raised);
 }
 .projects-status-tab {
   border: 0;
@@ -1358,16 +1423,16 @@ h1 {
   font-size: 0.85rem;
 }
 .projects-status-tab.is-active {
-  background: linear-gradient(135deg, var(--accent), #dd7d33);
-  color: white;
+  background: var(--primary);
+  color: var(--on-primary);
 }
 .projects-new-button {
   display: inline-block;
   padding: 0.65rem 1rem;
   border-radius: 12px;
   border: 0;
-  background: linear-gradient(135deg, var(--accent), #dd7d33);
-  color: white;
+  background: var(--primary);
+  color: var(--on-primary);
   text-decoration: none;
   font: inherit;
   font-weight: 600;
@@ -1376,8 +1441,8 @@ h1 {
 .projects-new-button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
-  background: rgba(23, 35, 26, 0.18);
-  color: rgba(23, 35, 26, 0.5);
+  background: var(--disabled-bg);
+  color: var(--disabled-ink);
 }
 .projects-empty {
   display: grid;
@@ -1386,7 +1451,7 @@ h1 {
   padding: 2rem;
   border: 1px dashed var(--line);
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.55);
+  background: var(--surface-sunken);
   color: var(--muted);
 }
 .projects-empty p {
@@ -1396,8 +1461,8 @@ h1 {
   display: inline-block;
   padding: 0.65rem 1rem;
   border-radius: 12px;
-  background: linear-gradient(135deg, var(--accent), #dd7d33);
-  color: white;
+  background: var(--primary);
+  color: var(--on-primary);
   text-decoration: none;
   font-weight: 600;
 }
@@ -1414,8 +1479,8 @@ h1 {
   border: 1px solid var(--line);
   border-radius: 16px;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 6px 16px rgba(17, 17, 17, 0.06);
+  background: var(--surface-raised);
+  box-shadow: 0 6px 16px var(--shadow);
 }
 .project-tile-open {
   display: block;
@@ -1431,7 +1496,7 @@ h1 {
 .project-tile-thumb-frame {
   width: 100%;
   aspect-ratio: 4 / 3;
-  background: #f1ece3;
+  background: var(--bg-accent);
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -1469,9 +1534,9 @@ h1 {
   width: 1.9rem;
   height: 1.9rem;
   border-radius: 999px;
-  border: 1px solid rgba(23, 35, 26, 0.18);
-  background: rgba(255, 255, 255, 0.92);
-  color: #8a1d1d;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-raised);
+  color: var(--danger);
   font-size: 1.1rem;
   line-height: 1;
   cursor: pointer;
@@ -1479,8 +1544,8 @@ h1 {
   place-items: center;
 }
 .project-tile-delete:hover {
-  background: #fff;
-  border-color: rgba(138, 29, 29, 0.4);
+  background: var(--danger-soft);
+  border-color: var(--danger-line);
 }
 .project-tile-restore {
   position: absolute;
@@ -1489,14 +1554,14 @@ h1 {
   padding: 0.35rem 0.7rem;
   border-radius: 999px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.95);
+  background: var(--surface-raised);
   color: var(--ink);
   font: inherit;
   font-size: 0.8rem;
   cursor: pointer;
 }
 .project-tile-restore:hover {
-  border-color: rgba(46, 129, 98, 0.5);
+  border-color: var(--selected);
 }
 
 /* Cloud save (editor → backend) -------------------------------------- */
@@ -1527,4 +1592,64 @@ h1 {
   display: inline-flex;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+/* ---- Accent (teal) ------------------------------------------------------
+   Teal sits directly on off-black (header band, dark buttons, dark pills).
+   On light surfaces it is always sandwiched between off-black edges:
+   inner ink ring, teal ring, outer ink ring. Never a large fill. */
+:focus-visible,
+.swatch-card:has(.swatch-toggle:focus-visible),
+.project-tile:has(.project-tile-open:focus-visible) {
+  outline: 3px solid var(--accent-hi);
+  outline-offset: 2px;
+  box-shadow:
+    0 0 0 2px var(--ink),
+    0 0 0 7px var(--ink);
+}
+.swatch-toggle:focus-visible,
+.project-tile-open:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.site-header :focus-visible {
+  outline-color: var(--accent-hi);
+  box-shadow: none;
+}
+.site-nav a:hover,
+.header-session-link:hover {
+  color: var(--accent-hi);
+}
+.merge-button:hover:not(:disabled),
+.pdf-button:hover:not(:disabled),
+.signin-primary:hover,
+.projects-new-button:hover:not(:disabled),
+.projects-cta:hover {
+  box-shadow: inset 0 0 0 2px var(--accent-hi);
+}
+.merge-button:hover:focus-visible,
+.pdf-button:hover:focus-visible,
+.signin-primary:hover:focus-visible,
+.projects-new-button:hover:focus-visible,
+.projects-cta:hover:focus-visible {
+  box-shadow:
+    inset 0 0 0 2px var(--accent-hi),
+    0 0 0 2px var(--ink),
+    0 0 0 7px var(--ink);
+}
+.swatch-card-selected,
+.keeper-chip {
+  border-color: var(--ink);
+  outline: 3px solid var(--accent-hi);
+  outline-offset: 0;
+  box-shadow: 0 0 0 4px var(--ink);
+}
+.sensitivity-preset.is-active,
+.projects-status-tab.is-active {
+  color: var(--accent-hi);
+}
+.background-toggle.is-active {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--accent-hi);
 }
