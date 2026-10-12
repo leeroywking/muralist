@@ -1228,6 +1228,48 @@ h1 {
   background: var(--accent-soft);
   color: var(--accent-ink);
 }
+/* Color lock: a locked chip stays its own buy color through Auto-combine. */
+.swatch-toggle {
+  position: relative;
+}
+.swatch-locked-badge {
+  position: absolute;
+  top: 0.45rem;
+  right: 0.5rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: 999px;
+  background: var(--badge-bg);
+  color: var(--badge-ink);
+  font-size: 0.8rem;
+  line-height: 1.2;
+  pointer-events: none;
+}
+.swatch-card-locked {
+  border-color: var(--line-strong);
+}
+.lock-toggle {
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  align-self: flex-start;
+  margin: 0.35rem 0.35rem 0.1rem 0;
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+.lock-toggle:hover {
+  border-color: var(--accent-line);
+}
+.lock-toggle.is-active {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--on-primary);
+}
+.lock-toggle.is-active:hover {
+  background: var(--primary-hover);
+}
 .background-note {
   margin: 0.25rem 0 0.2rem;
   font-size: 0.82rem;

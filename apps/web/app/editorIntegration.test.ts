@@ -384,3 +384,23 @@ test("getUploadLimits returns the fallback defaults (no backend endpoint yet)", 
   const limits = await getUploadLimits();
   assert.deepEqual(limits, DEFAULT_UPLOAD_LIMITS);
 });
+
+test("locked colors round-trip through buildPaletteJson → hydrateFromProject", () => {
+  const palette = buildPaletteJson(
+    makeSnapshot({
+      paletteColors: [
+        { ...makeColor({ id: "c1", hex: "#112233", coveragePercent: 60 }), locked: true },
+        makeColor({ id: "c2", hex: "#445566", coveragePercent: 40 })
+      ]
+    })
+  );
+  assert.equal(palette.colors.find((color) => color.id === "c1")?.locked, true);
+  // Unlocked colors omit the flag entirely.
+  assert.ok(!("locked" in palette.colors.find((color) => color.id === "c2")!));
+  assert.equal(paletteJsonSchema.safeParse(palette).success, true);
+  const state = hydrateFromProject(
+    makeProjectFixture({ palette: palette as ProjectFull["palette"] })
+  );
+  assert.equal(state.paletteColors.find((color) => color.id === "c1")?.locked, true);
+  assert.equal(state.paletteColors.find((color) => color.id === "c2")?.locked, undefined);
+});

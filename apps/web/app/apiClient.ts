@@ -54,6 +54,12 @@ export type PaletteColor = {
   hex: string;
   coverage: number;
   classification?: "buy" | "mix" | "absorb";
+  /**
+   * User-toggled: when true Auto-combine never absorbs or mixes this color
+   * away (it stays a buy color). Other unlocked colors can still absorb into
+   * it. Persisted via the optional `locked` field on `paletteColorSchema`.
+   */
+  locked?: boolean;
 };
 
 export type MergeOperation = {

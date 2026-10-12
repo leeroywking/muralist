@@ -53,6 +53,12 @@ type PaletteColor = {
   rgb: [number, number, number];
   pixelCount: number;
   coveragePercent: number;
+  /**
+   * User-toggled: Auto-combine never absorbs or mixes a locked color away
+   * (it stays a buy color), and Merge Selected never merges it into another
+   * chip. Unlocked colors can still absorb into it. Persisted with the palette.
+   */
+  locked?: boolean;
 };
 
 type AnalysisResult = {
@@ -905,6 +911,18 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     });
   }
 
+  // Lock/unlock a color so Auto-combine and Merge Selected keep it as its
+  // own buy color (see docs/plans/mix-accuracy.md, "Color lock").
+  function toggleColorLocked(colorId: string) {
+    setPaletteColors((current) =>
+      current.map((color) =>
+        color.id === colorId
+          ? { ...color, locked: color.locked ? undefined : true }
+          : color
+      )
+    );
+  }
+
   function mergeSelectedColors() {
     if (selectedColorIds.length < 2 || !mergeKeeperId) {
       return;
@@ -914,6 +932,17 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     const keeper = selectedColors.find((color) => color.id === mergeKeeperId);
 
     if (!keeper) {
+      return;
+    }
+
+    // A locked color can be the keeper but is never merged away into another.
+    const lockedMergedAway = selectedColors.filter(
+      (color) => color.locked && color.id !== mergeKeeperId
+    );
+    if (lockedMergedAway.length > 0) {
+      setSaveMessage(
+        `${lockedMergedAway.map((color) => color.hex).join(", ")} ${lockedMergedAway.length === 1 ? "is" : "are"} locked — unlock it or make it the keeper to merge.`
+      );
       return;
     }
 
@@ -971,9 +1000,13 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       pixelCount: color.pixelCount
     }));
 
+    const lockedIds = new Set(
+      paletteColors.filter((color) => color.locked).map((color) => color.id)
+    );
     const classifiedList = classifyPaletteColors(classifierInput, {
       residualThreshold: proSettings.residualThreshold,
-      mixCoveragePercent: proSettings.mixCoveragePercent
+      mixCoveragePercent: proSettings.mixCoveragePercent,
+      lockedIds
     });
     const { nextColors, mixes, absorbedCount } = applyClassification(classifierInput, classifiedList);
 
@@ -1041,7 +1074,17 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     ) {
       return;
     }
-    setPaletteColors(sourceAnalysis.colors);
+    // Locks are a user choice, not a merge, so they carry over onto the
+    // restored colors. (Locked colors are never merged away, so every locked
+    // id is still present in the original survey.)
+    const lockedIds = new Set(
+      paletteColors.filter((color) => color.locked).map((color) => color.id)
+    );
+    setPaletteColors(
+      sourceAnalysis.colors.map((color) =>
+        lockedIds.has(color.id) ? { ...color, locked: true } : color
+      )
+    );
     setClassifications({});
     setMixRecipes([]);
     setSelectedColorIds([]);
@@ -1662,10 +1705,11 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 const isMix = classification === "mix";
                 const recipe = isMix ? mixRecipes.find((entry) => entry.targetColorId === color.id) : undefined;
                 const isTransparent = transparentColorIds.has(color.id);
+                const isLocked = color.locked === true;
 
                 return (
                   <article
-                    className={`swatch-card ${isSelected ? "swatch-card-selected" : ""} ${isMix ? "swatch-card-mix" : ""} ${isTransparent ? "swatch-card-transparent" : ""}`}
+                    className={`swatch-card ${isSelected ? "swatch-card-selected" : ""} ${isMix ? "swatch-card-mix" : ""} ${isTransparent ? "swatch-card-transparent" : ""} ${isLocked ? "swatch-card-locked" : ""}`}
                     key={color.id}
                   >
                     <button
@@ -1674,6 +1718,9 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                       type="button"
                     >
                       <div className="swatch" style={{ backgroundColor: color.hex }} />
+                      {isLocked ? (
+                        <span className="swatch-locked-badge" aria-hidden="true">🔒</span>
+                      ) : null}
                     </button>
                     <div className="swatch-body">
                       <div className="swatch-title-row">
@@ -1688,6 +1735,16 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                       ) : (
                         <p>{color.pixelCount.toLocaleString()} sampled pixels in this working color.</p>
                       )}
+                      <button
+                        type="button"
+                        className={`lock-toggle ${isLocked ? "is-active" : ""}`}
+                        onClick={() => toggleColorLocked(color.id)}
+                        aria-pressed={isLocked}
+                        aria-label={`${isLocked ? "Unlock" : "Lock"} ${color.hex}`}
+                        title="Locked colors stay as their own buy color: Auto-combine and Merge Selected never fold them into another color."
+                      >
+                        {isLocked ? "🔒 Locked" : "Lock"}
+                      </button>
                       <button
                         type="button"
                         className={`background-toggle ${isTransparent ? "is-active" : ""}`}
