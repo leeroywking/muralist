@@ -53,3 +53,29 @@ Variant A plus a pigment path using `spectral.js` (MIT, v3.x, the Kubelka–Munk
   - Variant B only: a synthetic pigment-mix gradient (generated with spectral.js) is detected.
 - `npm run typecheck`, `npm run test`, `npm run build`, `npm run lint` from the repo root.
 - PR per variant, CI green, and the Pages preview at `https://leeroywking.github.io/muralist/previews/<slug>/` actually loads. Test plan: upload the octopus / teal-boats / sunset images, press Auto-combine at each sensitivity, and check the recipes.
+
+## Variant B revision (2026-10-12)
+
+**Rule change: the pigment model can veto recipes, not just add them.** The first cut of Variant B accepted a mix if the candidate fit *either* the sRGB straight line *or* the spectral.js pigment curve between two buy colors. Measured on the crowded all-gradients palette (every row of `packages/core/test/fixtures/color-mix-samples.csv` in one palette, `mixCoveragePercent` 0, via `packages/core/scripts/measure-gradient-fixtures.ts`), that rule still emitted recipes paint cannot produce — e.g. `#999999` grey = yellow `#F5F186` + blue `#1C25A8` through the sRGB line — and cross-gradient recipes rose versus Variant A (52 vs 43 of 84 steps at 0.02). A recipe is an instruction to physically mix paint, so a fit only digital tools can reproduce should never become one.
+
+Revised rule in `classifyPaletteColors` / `findBestMixingPair` (`packages/core/src/index.ts`):
+
+- A mix **recipe** is only produced from a pigment-curve (spectral.js) fit; its fractions are parts of paint from that fit.
+- A color that fits only the sRGB line (pigment curve misses it by more than the threshold) never gets a recipe. Below `mixCoveragePercent` it may still be absorbed into the nearer endpoint, as before. At or above `mixCoveragePercent` it is **buy**: a significant color we cannot honestly say how to mix is bought, not silently folded away.
+- Unchanged: Phase 0 near-duplicate dedup, the dominant-color rule, partner preference, "partners must be buy", and Variant A's fix that folds near-duplicates of a keeper that became a mix into the nearer recipe component.
+
+Measurement after the revision (crowded palette, 84 interior steps; "paint miss" = recipes whose spectral.js mix at the stated parts lands farther than the threshold from the target):
+
+| Preset | Variant | Own-gradient | Cross-gradient | Buy | Absorbed | Paint miss |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0.02 | A (sRGB) | 35 | 43 | 4 | 2 | 68 |
+| 0.02 | B either-path | 26 | 52 | 4 | 2 | 48 |
+| 0.02 | B veto | 13 | 57 | 12 | 2 | 0 |
+| 0.04 | A (sRGB) | 14 | 41 | 2 | 27 | 44 |
+| 0.04 | B either-path | 11 | 44 | 2 | 27 | 31 |
+| 0.04 | B veto | 11 | 43 | 3 | 27 | 0 |
+| 0.07 | A (sRGB) | 5 | 13 | 0 | 66 | 11 |
+| 0.07 | B either-path | 4 | 14 | 0 | 66 | 6 |
+| 0.07 | B veto | 5 | 12 | 1 | 66 | 0 |
+
+"Own-gradient" is the sRGB ground truth of a digital-gradient fixture, so the veto lowering it is expected: those rows are not paint mixes. Cross-gradient counts stay high, but every remaining recipe now reproduces its target in paint within the threshold, which is what the user acts on. Isolated per-gradient (each row classified alone, `mixCoveragePercent` 5) the steps that keep recipes are 53 / 71 / 53 of 84 at 0.02 / 0.04 / 0.07; white↔black keeps all four at every preset and white tints keep most.

@@ -488,7 +488,24 @@ test("classifyPaletteColors keeps a dominant mid-gradient color as a mix with a 
   const classByMap = new Map(classifications.map((entry) => [entry.id, entry]));
   assert.equal(classByMap.get("red")?.classification, "buy");
   assert.equal(classByMap.get("blue")?.classification, "buy");
-  const purple = classByMap.get("purple");
+  // Variant B pigment veto: #800080 is the sRGB midpoint of red and blue, but
+  // red + blue paint (spectral.js) mixes to a much darker purple, so the
+  // pigment curve misses it. An sRGB-only fit may not produce a recipe and
+  // purple covers 40% (>= mixCoveragePercent), so it is bought.
+  // (Was: purple is a mix with a 50/50 recipe.)
+  assert.equal(classByMap.get("purple")?.classification, "buy");
+
+  // The same dominant-mid case with the purple paint actually makes: equal
+  // parts red and blue through spectral.js is a mix with a 50/50 recipe.
+  const pigmentPurple = spectral
+    .mix([new spectral.Color("#FF0000"), 0.5], [new spectral.Color("#0000FF"), 0.5])
+    .toString()
+    .toUpperCase();
+  const pigmentClassifications = classifyPaletteColors(
+    [colors[0]!, colors[1]!, { id: "purple", rgb: hexToRgb(pigmentPurple), pixelCount: 40 }],
+    { residualThreshold: 0.04, mixCoveragePercent: 5, dominantCoveragePercent: 50 }
+  );
+  const purple = pigmentClassifications.find((entry) => entry.id === "purple");
   assert.equal(purple?.classification, "mix");
   assert.ok(purple?.recipe);
   const fractionsById = Object.fromEntries(
@@ -620,6 +637,47 @@ test("classifyPaletteColors rejects invalid options", () => {
 // mirrored from SENSITIVITY_PRESETS in apps/web/app/PrototypeApp.tsx.
 const OKLAB_PRESETS = [0.02, 0.04, 0.07];
 
+// Recipe fractions are rounded to 4 decimals, which moves the mix by far
+// less than this.
+const RECIPE_EPSILON = 1e-3;
+
+/** Linear-light RGB (0-1) to OKLab via unrounded sRGB, clamped like core. */
+function linearToOklab(linear: readonly number[]): [number, number, number] {
+  const toSrgb = (value: number) => {
+    const c = Math.min(1, Math.max(0, value));
+    return 255 * (c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055);
+  };
+  return rgbToOklab([toSrgb(linear[0]!), toSrgb(linear[1]!), toSrgb(linear[2]!)]);
+}
+
+/**
+ * OKLab distance between a recipe's target and what spectral.js says its
+ * components make when mixed at the recipe's fractions (parts of paint).
+ */
+function recipeMiss(
+  recipe: { targetColorId: string; components: { colorId: string; fraction: number }[] },
+  colors: ClassifyPaletteInput[]
+): number {
+  const rgbOf = (id: string) => colors.find((color) => color.id === id)!.rgb;
+  const mixed = spectral.mix(
+    ...recipe.components.map(
+      (component) =>
+        [new spectral.Color([...rgbOf(component.colorId)]), component.fraction] as [
+          InstanceType<typeof spectral.Color>,
+          number
+        ]
+    )
+  );
+  const target = rgbToOklab(rgbOf(recipe.targetColorId));
+  const made = linearToOklab(mixed.lRGB);
+  return Math.hypot(target[0] - made[0], target[1] - made[1], target[2] - made[2]);
+}
+
+function oklabChroma(hex: string): number {
+  const [, a, b] = rgbToOklab(hexToRgb(hex));
+  return Math.hypot(a, b);
+}
+
 function hexToRgb(hex: string): [number, number, number] {
   return [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16)) as [
     number,
@@ -734,11 +792,26 @@ test("classifyPaletteColors never mixes or absorbs a dominant color", () => {
     dominantCoveragePercent: 50
   });
   const relaxedById = new Map(relaxed.map((entry) => [entry.id, entry]));
-  assert.equal(relaxedById.get("mid")?.classification, "mix");
+  // Variant B pigment veto: "mid" is only on the sRGB line (red + blue paint
+  // is far darker), and at 20% it is above mixCoveragePercent, so it is
+  // bought rather than given a recipe paint cannot produce. (Was: "mix".)
+  assert.equal(relaxedById.get("mid")?.classification, "buy");
   assert.equal(relaxedById.get("pinkish")?.classification, "absorb");
+
+  // With the purple red + blue paint really makes in its place, lowering
+  // the dominant cutoff does let it collapse to a mix.
+  const pigmentMid = spectral
+    .mix([new spectral.Color([220, 20, 20]), 0.5], [new spectral.Color([20, 20, 220]), 0.5])
+    .toString()
+    .toUpperCase();
+  const pigmentRelaxed = classifyPaletteColors(
+    colors.map((color) => (color.id === "mid" ? { ...color, rgb: hexToRgb(pigmentMid) } : color)),
+    { residualThreshold: 0.04, mixCoveragePercent: 5, dominantCoveragePercent: 50 }
+  );
+  assert.equal(pigmentRelaxed.find((entry) => entry.id === "mid")?.classification, "mix");
 });
 
-test("classifyPaletteColors still detects synthetic sRGB gradients at every preset", () => {
+test("classifyPaletteColors only gives synthetic sRGB gradient steps recipes paint can make", () => {
   // Rows from feedback/ColorMixSamples(Sheet1).csv: 100/0, 80/20, 60/40,
   // 40/60, 20/80, 0/100 sRGB blends of two colors.
   const rows: string[][] = [
@@ -769,13 +842,24 @@ test("classifyPaletteColors still detects synthetic sRGB gradients at every pres
           assert.ok([first, last].includes(entry.absorbedIntoId!), `${hex} absorbs into an endpoint`);
           return;
         }
+        // Variant B pigment veto. These rows are sRGB lerps, not paint. A
+        // step the pigment curve between its endpoints misses is bought
+        // (each step covers 10%, above mixCoveragePercent); a step it fits
+        // is a mix whose recipe, in parts of paint, reproduces the step.
+        // (Was: every step is a mix with the sRGB 80/20 ... 20/80 fractions;
+        // those are sRGB interpolation weights, not parts of paint.)
+        if (entry.classification === "buy") return;
         assert.equal(entry.classification, "mix", `${hex} at ${residualThreshold}`);
-        const fractions = Object.fromEntries(
-          entry.recipe!.components.map((component) => [component.colorId, component.fraction])
+        // A step the endpoints' pigment curve misses is bought and can then
+        // partner a neighbouring step, so partners are any buys in the row.
+        assert.ok(
+          entry.recipe!.components.every((component) => row.includes(component.colorId)),
+          `${hex} partners outside its row`
         );
-        const expectedLast = (index + 1) * 0.2;
-        assert.ok(Math.abs((fractions[last] ?? 0) - expectedLast) < 0.03, `${hex} fraction`);
-        assert.ok(Math.abs((fractions[first] ?? 0) - (1 - expectedLast)) < 0.03, `${hex} fraction`);
+        assert.ok(
+          recipeMiss(entry.recipe!, colors) <= residualThreshold + RECIPE_EPSILON,
+          `${hex} recipe misses by ${recipeMiss(entry.recipe!, colors)} at ${residualThreshold}`
+        );
       });
     }
   }
@@ -800,6 +884,14 @@ test("classifyPaletteColors lets two colors that bracket each other both serve a
     });
     assertCoherent(classifications);
     const lightTeal = classifications.find((entry) => entry.id === "#92D8D7")!;
+    // Variant B pigment veto: at 0.02 the white + #038D8C pigment curve
+    // misses the light teal by more than the threshold, and the sRGB-line
+    // fit through the mid teal (itself a mix, so not a partner) cannot
+    // produce a recipe; at 8% it is bought. (Was: a mix at every preset.)
+    if (residualThreshold === 0.02) {
+      assert.equal(lightTeal.classification, "buy", `at ${residualThreshold}`);
+      continue;
+    }
     assert.equal(lightTeal.classification, "mix", `at ${residualThreshold}`);
     const partners = lightTeal.recipe!.components.map((component) => component.colorId);
     assert.ok(partners.includes("#FFFFFF"));
@@ -827,8 +919,15 @@ test("classifyPaletteColors lets two colors that bracket each other both serve a
   );
   assert.deepEqual(Object.keys(midTeal).sort(), ["#038D8C", "#FFFFFF"]);
   assert.ok(Math.abs(midTeal["#038D8C"]! - 0.6) < 0.05, `#038D8C share ${midTeal["#038D8C"]}`);
+  // Pigment veto (see above): the light teal is bought at 0.02. (Was: mixed
+  // from white + #038D8C.) At 0.04 it is that white tint of the deep teal.
+  assert.equal(byId.get("#92D8D7")?.classification, "buy");
+  const standard = classifyPaletteColors(colors, { residualThreshold: 0.04, mixCoveragePercent: 0 });
   assert.deepEqual(
-    byId.get("#92D8D7")!.recipe!.components.map((component) => component.colorId).sort(),
+    standard
+      .find((entry) => entry.id === "#92D8D7")!
+      .recipe!.components.map((component) => component.colorId)
+      .sort(),
     ["#038D8C", "#FFFFFF"]
   );
 });
@@ -1184,56 +1283,103 @@ function gradientPalette(gradients: GradientFixture[]): ClassifyPaletteInput[] {
   return [...pixelsById].map(([hex, pixelCount]) => ({ id: hex, rgb: hexToRgb(hex), pixelCount }));
 }
 
-test("classifyPaletteColors recovers every CSV fixture gradient step from its endpoints", () => {
+test("classifyPaletteColors gives CSV fixture gradient steps only pigment-consistent recipes from their endpoints", () => {
+  // Variant B pigment veto. The CSV steps are sRGB lerps; paint does not mix
+  // along that line. Each interior step, classified with only its own
+  // gradient, is a mix of the two endpoints whose spectral.js reconstruction
+  // at the recipe's parts lands within the threshold (partners: buys from
+  // the same gradient, normally the endpoints), absorbed within its
+  // gradient, or buy (the pigment curve misses it, or it is dominant).
+  // (Was: every step is a mix of its endpoints with the sRGB 80/20 ... 20/80
+  // fractions, buy only when dominant; those fractions are interpolation
+  // weights, not parts of paint, and a step paint cannot reach is now buy.)
+  // Recipes at dominant 15% (84 steps): 0.02 -> 53, 0.04 -> 71, 0.07 -> 53.
   const gradients = loadGradientFixtures();
   assert.equal(gradients.length, 21);
-  for (const { name, hexes } of gradients) {
-    const colors = gradientPalette([{ name, hexes }]);
-    const endpointA = hexes[0]!;
-    const endpointB = hexes[hexes.length - 1]!;
-    const interior = hexes.slice(1, -1);
-    const totalPixels = colors.reduce((sum, color) => sum + color.pixelCount, 0);
-    for (const residualThreshold of OKLAB_PRESETS) {
-      for (const dominantCoveragePercent of [15, 100]) {
+  const tintRows = new Set(["White to black", "Indigo to white", "Cyan to White", "Orange to white"]);
+  for (const residualThreshold of OKLAB_PRESETS) {
+    for (const dominantCoveragePercent of [15, 100]) {
+      for (const { name, hexes } of gradients) {
+        const colors = gradientPalette([{ name, hexes }]);
+        const endpointA = hexes[0]!;
+        const endpointB = hexes[hexes.length - 1]!;
         const classifications = classifyPaletteColors(colors, {
           residualThreshold,
           mixCoveragePercent: 5,
           dominantCoveragePercent
         });
+        assertCoherent(classifications);
         const byId = new Map(classifications.map((entry) => [entry.id, entry]));
-        interior.forEach((hex, index) => {
+        let recipes = 0;
+        let endpointRecipes = 0;
+        for (const hex of hexes.slice(1, -1)) {
           const entry = byId.get(hex)!;
           const label = `${name} ${hex} at ${residualThreshold}, dominant ${dominantCoveragePercent}%`;
-          if (entry.classification === "absorb" && residualThreshold > OKLAB_PRESETS[0]!) {
+          if (entry.classification === "buy") continue;
+          if (entry.classification === "absorb") {
             assert.ok(hexes.includes(entry.absorbedIntoId!), `${label} absorbs outside its gradient`);
-            return;
+            continue;
           }
-          // Known exception, not a mix-fit failure: at the aggressive preset
-          // the steps can sit closer than the near-duplicate distance, so one
-          // step absorbs both neighbours and the merged clump crosses the
-          // dominant cutoff, which pins it to buy (Orange to yellow at 0.07).
-          // Only allowed when its own + absorbed pixels really are dominant.
-          if (entry.classification === "buy" && residualThreshold > OKLAB_PRESETS[0]!) {
-            const mergedPixels = colors
-              .filter((color) => color.id === hex || byId.get(color.id)?.absorbedIntoId === hex)
-              .reduce((sum, color) => sum + color.pixelCount, 0);
-            assert.ok(
-              (mergedPixels / totalPixels) * 100 >= dominantCoveragePercent,
-              `${label} is buy without being dominant`
-            );
-            return;
-          }
-          assert.equal(entry.classification, "mix", label);
-          const fractions = new Map(
-            entry.recipe!.components.map((component) => [component.colorId, component.fraction])
-          );
-          assert.deepEqual([...fractions.keys()].sort(), [endpointA, endpointB].sort(), `${label} partners`);
-          const expectedA = 0.8 - index * 0.2;
+          recipes += 1;
+          // Partners are the endpoints, or — when the endpoints' pigment
+          // curve misses a step, so it is bought — that bought step and an
+          // endpoint. Either way they are buys from this gradient.
           assert.ok(
-            Math.abs(fractions.get(endpointA)! - expectedA) <= 0.02,
-            `${label}: endpoint A fraction ${fractions.get(endpointA)} vs ${expectedA}`
+            entry.recipe!.components.every((component) => hexes.includes(component.colorId)),
+            `${label} partners outside its gradient`
           );
-        });
+          if (
+            [endpointA, endpointB].every((endpoint) =>
+              entry.recipe!.components.some((component) => component.colorId === endpoint)
+            )
+          ) {
+            endpointRecipes += 1;
+          }
+          const miss = recipeMiss(entry.recipe!, colors);
+          assert.ok(miss <= residualThreshold + RECIPE_EPSILON, `${label} recipe misses by ${miss}`);
+        }
+        // White and black, and white tints of a color, mix close to the
+        // line in paint too, so they keep most of their recipes.
+        if (name === "White to black") {
+          assert.equal(endpointRecipes, 4, `${name} at ${residualThreshold}`);
+        }
+        if (tintRows.has(name) && residualThreshold === 0.04) {
+          assert.ok(recipes >= 3, `${name} keeps ${recipes} recipes at ${residualThreshold}`);
+        }
+      }
+    }
+  }
+});
+
+test("classifyPaletteColors emits only paint-consistent recipes in the crowded all-gradients palette", () => {
+  // Every CSV gradient in one palette (see packages/core/scripts/
+  // measure-gradient-fixtures.ts), so every other gradient's colors compete
+  // as partners. Under the old "either path" rule #999999 came out as
+  // yellow #F5F186 + blue #1C25A8 via the sRGB line — a grey no paint makes.
+  const colors = gradientPalette(loadGradientFixtures());
+  for (const residualThreshold of OKLAB_PRESETS) {
+    const classifications = classifyPaletteColors(colors, {
+      residualThreshold,
+      mixCoveragePercent: 0
+    });
+    assertCoherent(classifications);
+    for (const entry of classifications) {
+      if (entry.classification !== "mix") continue;
+      const label = `${entry.id} at ${residualThreshold}`;
+      const partners = entry.recipe!.components.map((component) => component.colorId);
+      const miss = recipeMiss(entry.recipe!, colors);
+      assert.ok(miss <= residualThreshold + RECIPE_EPSILON, `${label} recipe misses by ${miss}`);
+      // Two near-neutrals mix to a near-neutral in paint; a recipe may be
+      // off by at most the threshold, so a target more chromatic than that
+      // is not theirs to make.
+      if (partners.every((partner) => oklabChroma(partner) < 0.02)) {
+        assert.ok(
+          oklabChroma(entry.id) <= residualThreshold,
+          `${label} (chroma ${oklabChroma(entry.id)}) mixed from neutrals ${partners.join(" + ")}`
+        );
+      }
+      if (entry.id === "#999999") {
+        assert.notDeepEqual(partners.sort(), ["#1C25A8", "#F5F186"], `${label} is yellow + blue`);
       }
     }
   }

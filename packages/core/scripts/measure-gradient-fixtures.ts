@@ -4,17 +4,21 @@
  * Puts every gradient from test/fixtures/color-mix-samples.csv into ONE
  * palette (shared hexes deduped, pixels summed; endpoints 3000 px, interior
  * steps 600 px) and classifies it at each auto-combine preset with
- * mixCoveragePercent 0. In isolation every interior step mixes from its own
- * two endpoints (see the CSV fixture test); here every other gradient's
- * colors compete as partners, so the counts show how often the classifier
- * still picks the right pair versus a cross-gradient pair that merely fits
- * under the threshold. Not a test — the numbers are tracked, not asserted.
+ * mixCoveragePercent 0. The steps are sRGB lerps, so "own-gradient" is the
+ * digital ground truth; here every other gradient's colors compete as
+ * partners, so the counts show how often the classifier picks that pair
+ * versus a cross-gradient pair that merely fits under the threshold.
+ * "paint miss" counts recipes whose spectral.js mix at the stated parts
+ * lands farther than the threshold from the target (OKLab) — recipes paint
+ * cannot actually produce. Under the Variant B pigment veto it should be 0.
+ * Not a test — the numbers are tracked, not asserted.
  *
  * Run from the repo root: npx tsx packages/core/scripts/measure-gradient-fixtures.ts
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { classifyPaletteColors } from "../src/index.js";
+import spectral from "spectral.js";
+import { classifyPaletteColors, rgbToOklab } from "../src/index.js";
 import type { ClassifyPaletteInput } from "../src/index.js";
 
 const PRESETS = [0.02, 0.04, 0.07];
@@ -45,6 +49,30 @@ function hexToRgb(hex: string): [number, number, number] {
     number,
     number
   ];
+}
+
+// OKLab of what spectral.js says a recipe's components make at its parts,
+// via unrounded sRGB.
+function paintMiss(
+  target: [number, number, number],
+  components: { rgb: [number, number, number]; fraction: number }[]
+): number {
+  const mixed = spectral.mix(
+    ...components.map(
+      (component) =>
+        [new spectral.Color([...component.rgb]), component.fraction] as [
+          InstanceType<typeof spectral.Color>,
+          number
+        ]
+    )
+  );
+  const toSrgb = (value: number) => {
+    const c = Math.min(1, Math.max(0, value));
+    return 255 * (c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055);
+  };
+  const made = rgbToOklab([toSrgb(mixed.lRGB[0]), toSrgb(mixed.lRGB[1]), toSrgb(mixed.lRGB[2])]);
+  const goal = rgbToOklab(target);
+  return Math.hypot(goal[0] - made[0], goal[1] - made[1], goal[2] - made[2]);
 }
 
 const gradients = loadGradients();
@@ -80,6 +108,7 @@ for (const residualThreshold of PRESETS) {
   let cross = 0;
   let buy = 0;
   let absorbed = 0;
+  let missed = 0;
   const examples: string[] = [];
   for (const { hex, gradient } of interior) {
     const entry = byId.get(hex)!;
@@ -87,6 +116,11 @@ for (const residualThreshold of PRESETS) {
     else if (entry.classification === "absorb") absorbed += 1;
     else {
       const partners = entry.recipe!.components;
+      const miss = paintMiss(
+        hexToRgb(hex),
+        partners.map((component) => ({ rgb: hexToRgb(component.colorId), fraction: component.fraction }))
+      );
+      if (miss > residualThreshold + 1e-3) missed += 1;
       if (partners.every((component) => gradient.hexes.includes(component.colorId))) own += 1;
       else {
         cross += 1;
@@ -106,7 +140,7 @@ for (const residualThreshold of PRESETS) {
   }
   console.log(
     `preset ${residualThreshold}: interior ${interior.length}, own-gradient mix ${own}, ` +
-      `cross-gradient mix ${cross}, buy ${buy}, absorbed ${absorbed}`
+      `cross-gradient mix ${cross}, buy ${buy}, absorbed ${absorbed}, paint miss ${missed}`
   );
   for (const example of examples) console.log(example);
 }

@@ -130,7 +130,9 @@ export type ClassifyPaletteOptions = {
    * higher = more aggressive, collapses more onto mixing lines. */
   residualThreshold: number;
   /** Coverage percent threshold that splits mix (kept with recipe, >= threshold)
-   * from absorb (silently folded into nearest endpoint, < threshold). */
+   * from absorb (silently folded into nearest endpoint, < threshold). A color
+   * at or above it that fits only the sRGB line (not the pigment curve) is
+   * buy, not mix — see classifyPaletteColors. */
   mixCoveragePercent: number;
   /** Colors covering at least this percent of the image (after near-duplicate
    * merging) are always buy — never a mix or absorb target. Default 15. */
@@ -505,6 +507,13 @@ export function classifyPaletteColors(
   // Pigment mix curves depend only on the two buy colors, so they are
   // sampled once per pair and reused across every candidate and pass.
   const pigmentCurves = new Map<string, PigmentCurve>();
+  // Pigment veto (Variant B revision): a mix recipe is only ever produced
+  // from a pigment-curve (spectral.js) fit, because a recipe is an
+  // instruction to physically mix paint. A color that fits only the sRGB
+  // line between two buys (a digital gradient paint cannot reproduce, e.g.
+  // yellow + blue through grey) may still be silently absorbed when it is
+  // below mixCoveragePercent, but at or above it the color is significant
+  // and we cannot honestly say how to mix it, so it is bought.
   const fitFromBuys = (color: ClassifyPaletteInput) =>
     findBestMixingPair(
       color,
@@ -515,7 +524,8 @@ export function classifyPaletteColors(
           entry.pixelCount >= color.pixelCount * MIN_PARTNER_COVERAGE_RATIO
       ),
       options.residualThreshold,
-      pigmentCurves
+      pigmentCurves,
+      coverageOf(color) < options.mixCoveragePercent
     );
 
   // Phase 1: greedy, coverage-ordered buy set. Survivors are visited from
@@ -575,6 +585,8 @@ export function classifyPaletteColors(
       continue;
     }
     const { endpointA, endpointB, t } = fit;
+    // At/above mixCoveragePercent fitFromBuys only accepts pigment fits, so
+    // the recipe's fractions are parts of paint from the spectral.js curve.
     if (coverageOf(color) >= options.mixCoveragePercent) {
       classifications.set(color.id, {
         id: color.id,
@@ -744,18 +756,19 @@ const PARTNER_RESIDUAL_SLACK = 0.25;
 /**
  * Find the two buy colors that best mix to `candidate`.
  *
- * Fit: each pair is tested along two mix paths and the lower residual wins;
- * the recipe's `t` comes from the winning path.
- * - sRGB line: digital gradient tools interpolate in sRGB. `t` is the
- *   candidate's projection onto that line in sRGB; the residual is the OKLab
- *   distance between the candidate and the sRGB point at `t`, so the
- *   tolerance is perceptual and a hue the line misses (white + black for a
- *   teal) costs its full chroma difference.
+ * Fit: each pair is tested along up to two mix paths.
  * - Pigment curve (Variant B): physical paint does not mix along the sRGB
  *   line (blue + yellow paint goes through green, not gray). The curve is the
  *   Kubelka-Munk mix from spectral.js of `(1 - t)` parts A and `t` parts B,
  *   sampled across t in [0, 1] and refined around the closest sample; the
- *   residual is the OKLab distance to the closest point found.
+ *   residual is the OKLab distance to the closest point found. This is the
+ *   only path that can yield a recipe.
+ * - sRGB line (only when `allowLineFit`): digital gradient tools interpolate
+ *   in sRGB. `t` is the candidate's projection onto that line in sRGB; the
+ *   residual is the OKLab distance between the candidate and the sRGB point
+ *   at `t`. The caller allows it only for colors that will be absorbed
+ *   (below mixCoveragePercent), where `t` merely picks the nearer endpoint;
+ *   for those the lower residual of the two paths wins.
  *
  * Scoring: let `best` be the lowest residual among fitting pairs. Every pair
  * within `best + PARTNER_RESIDUAL_SLACK * threshold` is acceptable; among
@@ -767,7 +780,8 @@ function findBestMixingPair(
   candidate: ClassifyPaletteInput,
   buyColors: ClassifyPaletteInput[],
   residualThreshold: number,
-  pigmentCurves: Map<string, PigmentCurve>
+  pigmentCurves: Map<string, PigmentCurve>,
+  allowLineFit: boolean
 ): { endpointA: ClassifyPaletteInput; endpointB: ClassifyPaletteInput; t: number; residual: number } | null {
   if (buyColors.length < 2) return null;
 
@@ -783,7 +797,9 @@ function findBestMixingPair(
     for (let j = i + 1; j < buyColors.length; j += 1) {
       const a = buyColors[i]!;
       const b = buyColors[j]!;
-      const lineFit = projectOntoSegment(candidate.rgb, candidateLab, a.rgb, b.rgb);
+      const lineFit = allowLineFit
+        ? projectOntoSegment(candidate.rgb, candidateLab, a.rgb, b.rgb)
+        : null;
       const pigmentFit = fitPigmentCurve(
         candidateLab,
         getPigmentCurve(pigmentCurves, a, b),
