@@ -13,15 +13,22 @@ import type {
   WorkspaceContent
 } from "@muralist/core";
 import {
-  applyClassification,
-  applyMixesToCoverage,
   buildMaquetteFileName,
-  classifyPaletteColors,
   compareAspectRatios,
   deriveColorAreaEstimates,
   deriveGridSpec,
-  suggestContainersForColors
+  suggestContainersForColors,
+  surveyPalette,
+  type RgbaImage
 } from "@muralist/core";
+import { analyzeImageFile, dataUrlToBlob, flattenToPngDataUrl } from "./analysisClient";
+import {
+  applyValidMixesToCoverage,
+  autoCombineBase,
+  dropRecipesUsingColor,
+  runAutoCombine
+} from "./autoCombine";
+import { useConfirm } from "./ConfirmDialog";
 import { downloadMaquettePdf } from "./maquettePdf";
 import {
   OverLimitError,
@@ -53,6 +60,12 @@ type PaletteColor = {
   rgb: [number, number, number];
   pixelCount: number;
   coveragePercent: number;
+  /**
+   * User-toggled: Auto-combine never absorbs or mixes a locked color away
+   * (it stays a buy color), and Merge Selected never merges it into another
+   * chip. Unlocked colors can still absorb into it. Persisted with the palette.
+   */
+  locked?: boolean;
 };
 
 type AnalysisResult = {
@@ -126,16 +139,56 @@ type ProSettings = {
   rememberOnDevice: boolean;
 };
 
-// Calibrated against the 12-per-channel quantization applied in
-// analyzeLoadedImage. The minimum inter-cluster Euclidean distance is
-// sqrt(3) * 12 ≈ 20.8, so any threshold near that is effectively inert.
-// Presets sit above the quantization floor to give meaningful behavior on
-// real captured palettes.
+// Residual thresholds in OKLab distance (classifyPaletteColors measures mix
+// fit and near-duplicate merging perceptually; ~0.02 is a just-noticeable
+// difference, black-to-white is 1.0). Calibration (2026-10-12): the old RGB
+// presets 24 / 36 / 54 map to roughly 0.045 / 0.067 / 0.10 at the median
+// OKLab-per-RGB-unit ratio of real palette neighbor pairs, but the
+// coverage-ordered classifier collapses more than the old one did at the
+// same tolerance, so the presets sit lower. Swept over the analyzer palettes
+// of the feedback and docs/example_art images, 0.02 / 0.04 / 0.07 keep the
+// three presets clearly distinct (octopus 15 / 10 / 7 buy colors, teal boats
+// 17 / 11 / 8, sunset path 8 / 5 / 4), and 0.07 still sits below the ~0.086
+// it would take to call light teal a white + black grey.
 const SENSITIVITY_PRESETS: Record<Exclude<AutoCombineSensitivity, "custom">, number> = {
-  conservative: 24,
-  balanced: 36,
-  aggressive: 54
+  conservative: 0.02,
+  balanced: 0.04,
+  aggressive: 0.07
 };
+
+// Range accepted for a custom residual threshold. Anything outside it —
+// notably a pre-OKLab RGB-unit value (1-100) still saved on a device or an
+// account — is replaced with the balanced preset on load.
+const CUSTOM_RESIDUAL_MIN = 0.005;
+const CUSTOM_RESIDUAL_MAX = 0.15;
+
+function normalizeProSettings(settings: ProSettings): ProSettings {
+  if (settings.autoCombineSensitivity !== "custom") {
+    const preset = SENSITIVITY_PRESETS[settings.autoCombineSensitivity];
+    if (preset === undefined) {
+      return {
+        ...settings,
+        autoCombineSensitivity: DEFAULT_PRO_SETTINGS.autoCombineSensitivity,
+        residualThreshold: DEFAULT_PRO_SETTINGS.residualThreshold
+      };
+    }
+    return { ...settings, residualThreshold: preset };
+  }
+  const value = settings.residualThreshold;
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < CUSTOM_RESIDUAL_MIN ||
+    value > CUSTOM_RESIDUAL_MAX
+  ) {
+    return {
+      ...settings,
+      autoCombineSensitivity: DEFAULT_PRO_SETTINGS.autoCombineSensitivity,
+      residualThreshold: DEFAULT_PRO_SETTINGS.residualThreshold
+    };
+  }
+  return settings;
+}
 
 const DEFAULT_PRO_SETTINGS: ProSettings = {
   autoCombineSensitivity: "balanced",
@@ -144,15 +197,8 @@ const DEFAULT_PRO_SETTINGS: ProSettings = {
   rememberOnDevice: true
 };
 
-const maxDimension = 320;
-const maxSamplePixels = 22000;
-// Initial-survey palette reduction is by *color difference*, not popularity.
-// Buckets closer than this Euclidean RGB distance fold together; anything more
-// distinct is kept regardless of how little of the image it covers — so small,
-// vivid regions (a flower's yellow center) survive instead of being cut by a
-// top-N popularity slice. 24 sits just above the /12 quantization floor and
-// matches the "conservative" auto-combine units.
-const minColorDistance = 24;
+// Palette survey constants (analysis size, sample cap, color-distance fold)
+// live with the survey in packages/core/src/palette.ts and raster.ts.
 const savedMergePlanKey = "muralist.saved-merge-plan";
 const proSettingsKey = "muralist.pro-settings";
 
@@ -167,8 +213,14 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     return brand.finishes[0]!.id;
   };
 
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const sourcePixelsRef = useRef<{ data: Uint8ClampedArray; width: number; height: number } | null>(null);
+  const { confirm, dialog: confirmDialog } = useConfirm();
+  // Analysis-size pixels decoded from the file's own bytes by our pipeline
+  // (analysisClient -> imageAnalysis -> @muralist/core) — never a canvas
+  // readback. Every calculation (survey, Full reset, reduced preview) reads
+  // these. Product rule: "I don't want the browser-modified file in our key
+  // path at all. If what is rendered to the user contains privacy noise
+  // that's fine, as long as we aren't running calculations against it."
+  const sourcePixelsRef = useRef<RgbaImage | null>(null);
   // `proSettingsHydratedRef` flips to true once /me has populated proSettings
   // so the save-back effect doesn't PATCH the default values before the real
   // server values arrive. `proSettingsSkipNextPushRef` suppresses the PATCH
@@ -196,10 +248,20 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   const [saveMessage, setSaveMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  // Non-blocking note from the analysis pipeline (e.g. an unsupported color
+  // profile read as sRGB).
+  const [analysisNote, setAnalysisNote] = useState<string | null>(null);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [classifications, setClassifications] = useState<Record<string, PaletteClassification>>({});
   const [mixRecipes, setMixRecipes] = useState<MixRecipe[]>([]);
+  // The palette as it was before the first Auto-combine (manual merges and
+  // lock flags included). Every Auto-combine re-classifies from it, so
+  // presses and preset changes are idempotent and order-independent. Any
+  // manual edit (merge, reset, full reset, upload, load) clears it; the next
+  // Auto-combine then snapshots the palette as edited. Not persisted: after a
+  // save/load the first Auto-combine starts from the loaded palette.
+  const [autoCombineSnapshot, setAutoCombineSnapshot] = useState<PaletteColor[] | null>(null);
   // Colors flagged as bare-wall background: excluded from the paint estimate and
   // rendered as show-through (alpha 0) in the flatten preview + maquette PDF.
   const [transparentColorIds, setTransparentColorIds] = useState<Set<string>>(new Set());
@@ -265,11 +327,12 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     }));
     if (mixRecipes.length === 0) return raw;
     try {
-      return applyMixesToCoverage(raw, mixRecipes);
+      // Recipes that reference a color no longer in the paintable palette
+      // (marked as background, or removed by a manual merge) are skipped
+      // individually; the rest still apply.
+      return applyValidMixesToCoverage(raw, mixRecipes);
     } catch {
-      // Mix recipes reference ids that are no longer in the palette (e.g. a
-      // manual merge ran after auto-combine). Fall back to raw coverage —
-      // the next auto-combine pass will re-derive.
+      // Defensive: malformed coverage. The next auto-combine pass re-derives.
       return raw;
     }
   }, [paintablePalette, mixRecipes]);
@@ -403,7 +466,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     }
     let cancelled = false;
     const compute = () => {
-      const flat = flattenImageToPalette(source, paletteColors, transparentColorIds);
+      const flat = flattenToPngDataUrl(source, paletteColors, transparentColorIds);
       if (!cancelled) {
         setFlattenedImageUrl(flat);
       }
@@ -479,7 +542,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     if (!saved) return;
     try {
       const parsed = JSON.parse(saved) as Partial<ProSettings>;
-      setProSettings({ ...DEFAULT_PRO_SETTINGS, ...parsed });
+      setProSettings(normalizeProSettings({ ...DEFAULT_PRO_SETTINGS, ...parsed }));
     } catch {
       window.localStorage.removeItem(proSettingsKey);
     }
@@ -527,11 +590,13 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
         // saved yet (e.g. rememberOnDevice, which is device-only) keeps its
         // default instead of going undefined.
         proSettingsSkipNextPushRef.current = true;
-        setProSettings((current) => ({
-          ...DEFAULT_PRO_SETTINGS,
-          ...current,
-          ...(me.proSettings ?? {})
-        }));
+        setProSettings((current) =>
+          normalizeProSettings({
+            ...DEFAULT_PRO_SETTINGS,
+            ...current,
+            ...(me.proSettings ?? {})
+          })
+        );
         proSettingsHydratedRef.current = true;
       })
       .catch((err) => {
@@ -593,6 +658,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
         if (cancelled) return;
         const hydrated = hydrateFromProject(project);
         setPaletteColors(hydrated.paletteColors);
+        setAutoCombineSnapshot(null);
         setClassifications(hydrated.classifications);
         setMixRecipes(hydrated.mixRecipes);
         setColorFinishOverrides(hydrated.colorFinishOverrides);
@@ -610,31 +676,15 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
         // so the field sheet / PDF / flattened preview render on load.
         // Unlike upload, we do NOT re-cluster the image — the palette is
         // authoritative from the backend. We only need dimensions and the
-        // raw pixel buffer for the flattened-preview painter.
+        // raw pixel buffer for the flattened-preview painter, decoded from
+        // the stored JPEG's bytes by our own pipeline (no canvas readback).
         // Fire-and-forget: if decoding fails, the editor still has the
         // palette and preview image.
-        loadImage(hydrated.imageDataUrl)
-          .then((image) => {
+        analyzeImageFile(dataUrlToBlob(hydrated.imageDataUrl), "pixels-only")
+          .then((run) => {
             if (cancelled) return;
-            const canvas = canvasRef.current;
-            if (!canvas) return;
-            const { width, height } = getScaledDimensions(
-              image.naturalWidth,
-              image.naturalHeight
-            );
-            canvas.width = width;
-            canvas.height = height;
-            const ctx = canvas.getContext("2d", { willReadFrequently: true });
-            if (!ctx) return;
-            ctx.clearRect(0, 0, width, height);
-            ctx.drawImage(image, 0, 0, width, height);
-            setSourceAnalysis({ width, height, colors: [] });
-            const img = ctx.getImageData(0, 0, width, height);
-            sourcePixelsRef.current = {
-              data: new Uint8ClampedArray(img.data),
-              width,
-              height
-            };
+            setSourceAnalysis({ width: run.pixels.width, height: run.pixels.height, colors: [] });
+            sourcePixelsRef.current = run.pixels;
           })
           .catch(() => undefined);
         // Bump lastViewedAt so the dashboard sort stays fresh. Fire-and-forget;
@@ -663,10 +713,13 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   }, [isSignedIn]);
 
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
-    // Sanitize-first upload pipeline (docs/plans/web-ui-post-backend.md §1 step 9).
-    // The sanitizer enforces the allowlist + long-edge cap; the palette is
-    // extracted from the sanitized pixel data so the preview and the stored
-    // artifact come from the same source of truth.
+    // Two independent pipelines (docs/plans/mix-accuracy.md, "Browser-
+    // independent analysis"):
+    //  - analysis: the ORIGINAL file's bytes -> our own decode + ICC -> sRGB +
+    //    box downscale (worker) -> palette survey. Same pixels in every browser.
+    //  - persistence/display: sanitizeUpload (allowlist, magic bytes, caps)
+    //    re-encodes the sanitized + thumbnail JPEGs on a canvas. Never an
+    //    analysis input.
     const file = event.target.files?.[0];
 
     if (!file) {
@@ -693,8 +746,10 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setColorFinishOverrides({});
     setColorCoatsOverrides({});
     setTransparentColorIds(new Set());
+    setAutoCombineSnapshot(null);
     setFlattenedImageUrl(null);
     sourcePixelsRef.current = null;
+    setAnalysisNote(null);
     setSanitizedImageBase64(null);
     setThumbnailBase64(null);
     // A new upload means any previously loaded project is no longer the
@@ -704,24 +759,17 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
 
     startTransition(async () => {
       try {
-        const { sanitized, thumbnail } = await sanitizeUpload(file, limits);
-        // Run the palette extractor against the sanitized bytes so the
-        // swatches we store match what the server has.
+        const [{ sanitized, thumbnail }, run] = await Promise.all([
+          sanitizeUpload(file, limits),
+          analyzeImageFile(file, "survey")
+        ]);
         const sanitizedUrl = URL.createObjectURL(sanitized);
         setPreviewUrl(sanitizedUrl);
-        const result = await analyzeBlob(sanitized, canvasRef.current);
-        setSourceAnalysis(result);
-        setPaletteColors(result.colors);
-        const canvas = canvasRef.current;
-        const ctx = canvas?.getContext("2d", { willReadFrequently: true });
-        if (canvas && ctx) {
-          const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          sourcePixelsRef.current = {
-            data: new Uint8ClampedArray(img.data),
-            width: canvas.width,
-            height: canvas.height
-          };
-        }
+        const colors = run.survey?.colors ?? [];
+        setSourceAnalysis({ width: run.pixels.width, height: run.pixels.height, colors });
+        setPaletteColors(colors);
+        sourcePixelsRef.current = run.pixels;
+        setAnalysisNote(run.color.note);
 
         // Stash the base64 artifacts so the Save button doesn't have to
         // re-run sanitization — uploads a 25 KB JPEG, fine to keep in
@@ -851,7 +899,11 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
 
   // Flag/unflag a color as bare-wall background. Excluded from the paint plan
   // and rendered show-through; persisted with the project (see buildEditorSnapshot).
+  // A background color is never a mix partner: marking one after an
+  // Auto-combine drops the recipes that use it (their targets become buy
+  // colors) until the next Auto-combine re-classifies without it.
   function toggleTransparentColor(colorId: string) {
+    const becomesBackground = !transparentColorIds.has(colorId);
     setTransparentColorIds((current) => {
       const next = new Set(current);
       if (next.has(colorId)) {
@@ -861,6 +913,32 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
       }
       return next;
     });
+    if (!becomesBackground) return;
+    const dropped = dropRecipesUsingColor(mixRecipes, classifications, colorId);
+    if (dropped.droppedTargetIds.length === 0) return;
+    setMixRecipes(dropped.mixes);
+    setClassifications(dropped.classifications);
+    const hexById = new Map(paletteColors.map((color) => [color.id, color.hex]));
+    const affected = dropped.droppedTargetIds
+      .filter((id) => id !== colorId)
+      .map((id) => hexById.get(id) ?? id);
+    if (affected.length > 0) {
+      setSaveMessage(
+        `${affected.join(", ")} ${affected.length === 1 ? "was" : "were"} mixed with the background color — now buy. Press Auto-combine to re-check.`
+      );
+    }
+  }
+
+  // Lock/unlock a color so Auto-combine and Merge Selected keep it as its
+  // own buy color (see docs/plans/mix-accuracy.md, "Color lock").
+  function toggleColorLocked(colorId: string) {
+    setPaletteColors((current) =>
+      current.map((color) =>
+        color.id === colorId
+          ? { ...color, locked: color.locked ? undefined : true }
+          : color
+      )
+    );
   }
 
   function mergeSelectedColors() {
@@ -872,6 +950,17 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     const keeper = selectedColors.find((color) => color.id === mergeKeeperId);
 
     if (!keeper) {
+      return;
+    }
+
+    // A locked color can be the keeper but is never merged away into another.
+    const lockedMergedAway = selectedColors.filter(
+      (color) => color.locked && color.id !== mergeKeeperId
+    );
+    if (lockedMergedAway.length > 0) {
+      setSaveMessage(
+        `${lockedMergedAway.map((color) => color.hex).join(", ")} ${lockedMergedAway.length === 1 ? "is" : "are"} locked — unlock it or make it the keeper to merge.`
+      );
       return;
     }
 
@@ -912,41 +1001,27 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setMergeKeeperId("");
     setSaveMessage("");
     // Manual merge invalidates any prior auto-combine classifications — the
-    // recipes and absorb marks were based on the old palette composition.
+    // recipes and absorb marks were based on the old palette composition —
+    // and the pre-combine snapshot (the merge is a new baseline).
     setClassifications({});
     setMixRecipes([]);
+    setAutoCombineSnapshot(null);
   }
 
   function handleAutoCombine() {
-    if (paletteColors.length < 3) {
+    const base = autoCombineBase(autoCombineSnapshot, paletteColors);
+    if (base.length < 3) {
       setSaveMessage("Need at least three captured colors before auto-combine can help.");
       return;
     }
+    if (!autoCombineSnapshot) setAutoCombineSnapshot(base);
 
-    const classifierInput = paletteColors.map((color) => ({
-      id: color.id,
-      rgb: color.rgb,
-      pixelCount: color.pixelCount
-    }));
-
-    const classifiedList = classifyPaletteColors(classifierInput, {
-      residualThreshold: proSettings.residualThreshold,
-      mixCoveragePercent: proSettings.mixCoveragePercent
-    });
-    const { nextColors, mixes, absorbedCount } = applyClassification(classifierInput, classifiedList);
-
-    if (absorbedCount === 0 && mixes.length === 0) {
-      setSaveMessage("Nothing to auto-combine — no gradient or mix members detected.");
-      return;
-    }
-
-    const pixelCountById = new Map(nextColors.map((entry) => [entry.id, entry.pixelCount]));
-    const nextPalette: PaletteColor[] = paletteColors
-      .filter((color) => pixelCountById.has(color.id))
-      .map((color) => ({ ...color, pixelCount: pixelCountById.get(color.id)! }))
-      .sort((left, right) => right.pixelCount - left.pixelCount);
-
-    const rebalanced = rebalanceCoverage(nextPalette);
+    const { palette: rebalanced, classifications: nextClassifications, mixes, absorbedCount } =
+      runAutoCombine(base, {
+        residualThreshold: proSettings.residualThreshold,
+        mixCoveragePercent: proSettings.mixCoveragePercent,
+        backgroundIds: transparentColorIds
+      });
     const retainedIds = new Set(rebalanced.map((color) => color.id));
 
     setColorFinishOverrides((current) => {
@@ -966,10 +1041,13 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setSelectedColorIds([]);
     setMergeKeeperId("");
 
-    const nextClassifications: Record<string, PaletteClassification> = {};
-    for (const entry of classifiedList) {
-      if (!retainedIds.has(entry.id)) continue;
-      nextClassifications[entry.id] = entry.classification;
+    if (absorbedCount === 0 && mixes.length === 0) {
+      // Nothing combines at this setting: show the pre-combine palette.
+      setPaletteColors(rebalanced);
+      setClassifications({});
+      setMixRecipes([]);
+      setSaveMessage("Nothing to auto-combine — no gradient or mix members detected.");
+      return;
     }
 
     setPaletteColors(rebalanced);
@@ -987,21 +1065,34 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   // reduce the color set, so the original ids are a superset and this reintroduces
   // every color the analyzer found. "Full clean slate": drop all merge-derived
   // state, per-color overrides, and the on-device merge plan.
-  function handleResetPalette() {
+  async function handleResetPalette() {
     if (!sourceAnalysis) {
       return;
     }
-    if (
-      typeof window !== "undefined" &&
-      !window.confirm(
-        "Reset to the original image colors? This clears all merges and per-color finish/coats overrides."
-      )
-    ) {
+    const ok = await confirm({
+      title: "Reset to original colors?",
+      message:
+        "Reset to the original image colors? This clears all merges and per-color finish/coats overrides.",
+      confirmLabel: "Reset colors",
+      destructive: true
+    });
+    if (!ok) {
       return;
     }
-    setPaletteColors(sourceAnalysis.colors);
+    // Locks are a user choice, not a merge, so they carry over onto the
+    // restored colors. (Locked colors are never merged away, so every locked
+    // id is still present in the original survey.)
+    const lockedIds = new Set(
+      paletteColors.filter((color) => color.locked).map((color) => color.id)
+    );
+    setPaletteColors(
+      sourceAnalysis.colors.map((color) =>
+        lockedIds.has(color.id) ? { ...color, locked: true } : color
+      )
+    );
     setClassifications({});
     setMixRecipes([]);
+    setAutoCombineSnapshot(null);
     setSelectedColorIds([]);
     setMergeKeeperId("");
     setColorFinishOverrides({});
@@ -1022,26 +1113,29 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
   // into sourceAnalysis (for a loaded project that's the saved palette) — this
   // recomputes the very-first analysis from the picture itself. Art + wall
   // settings are untouched.
-  function handleFullReset() {
+  async function handleFullReset() {
     const source = sourcePixelsRef.current;
     if (!source) {
       setSaveMessage("No image loaded to re-analyze yet.");
       return;
     }
-    if (
-      typeof window !== "undefined" &&
-      !window.confirm(
-        "Full reset — rebuild the palette from the original image? This discards every merge and color edit. Your image and wall settings stay."
-      )
-    ) {
+    const ok = await confirm({
+      title: "Full reset?",
+      message:
+        "Full reset — rebuild the palette from the original image? This discards every merge and color edit. Your image and wall settings stay.",
+      confirmLabel: "Full reset",
+      destructive: true
+    });
+    if (!ok) {
       return;
     }
     try {
-      const fresh = analyzePixels(source.data, source.width, source.height);
+      const fresh = surveyPalette(source);
       setSourceAnalysis(fresh);
       setPaletteColors(fresh.colors);
       setClassifications({});
       setMixRecipes([]);
+      setAutoCombineSnapshot(null);
       setSelectedColorIds([]);
       setMergeKeeperId("");
       setColorFinishOverrides({});
@@ -1221,6 +1315,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
     setWastePercent(savedMergePlan.wastePercent);
     setSourceAnalysis(savedMergePlan.sourceAnalysis);
     setPaletteColors(savedMergePlan.paletteColors);
+    setAutoCombineSnapshot(null);
     const restoredDefaultFinish =
       savedMergePlan.defaultFinishId ?? defaultFinishForBrand(savedMergePlan.selectedBrandId);
     setDefaultFinishId(restoredDefaultFinish);
@@ -1296,6 +1391,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
 
           {error ? <p className="status error">{error}</p> : null}
           {isPending ? <p className="status">Capturing dominant colors from the artwork...</p> : null}
+          {analysisNote && !isPending ? <p className="status">{analysisNote}</p> : null}
 
           {previewUrl ? (
             <div className="preview-frame">
@@ -1620,10 +1716,11 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                 const isMix = classification === "mix";
                 const recipe = isMix ? mixRecipes.find((entry) => entry.targetColorId === color.id) : undefined;
                 const isTransparent = transparentColorIds.has(color.id);
+                const isLocked = color.locked === true;
 
                 return (
                   <article
-                    className={`swatch-card ${isSelected ? "swatch-card-selected" : ""} ${isMix ? "swatch-card-mix" : ""} ${isTransparent ? "swatch-card-transparent" : ""}`}
+                    className={`swatch-card ${isSelected ? "swatch-card-selected" : ""} ${isMix ? "swatch-card-mix" : ""} ${isTransparent ? "swatch-card-transparent" : ""} ${isLocked ? "swatch-card-locked" : ""}`}
                     key={color.id}
                   >
                     <button
@@ -1632,6 +1729,9 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                       type="button"
                     >
                       <div className="swatch" style={{ backgroundColor: color.hex }} />
+                      {isLocked ? (
+                        <span className="swatch-locked-badge" aria-hidden="true">🔒</span>
+                      ) : null}
                     </button>
                     <div className="swatch-body">
                       <div className="swatch-title-row">
@@ -1646,6 +1746,16 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
                       ) : (
                         <p>{color.pixelCount.toLocaleString()} sampled pixels in this working color.</p>
                       )}
+                      <button
+                        type="button"
+                        className={`lock-toggle ${isLocked ? "is-active" : ""}`}
+                        onClick={() => toggleColorLocked(color.id)}
+                        aria-pressed={isLocked}
+                        aria-label={`${isLocked ? "Unlock" : "Lock"} ${color.hex}`}
+                        title="Locked colors stay as their own buy color: Auto-combine and Merge Selected never fold them into another color."
+                      >
+                        {isLocked ? "🔒 Locked" : "Lock"}
+                      </button>
                       <button
                         type="button"
                         className={`background-toggle ${isTransparent ? "is-active" : ""}`}
@@ -1709,7 +1819,7 @@ export function PrototypeApp({ catalog }: PrototypeAppProps) {
         )}
       </section>
 
-      <canvas className="hidden-canvas" ref={canvasRef} />
+      {confirmDialog}
     </main>
   );
 }
@@ -1886,89 +1996,6 @@ function GridPreview({
   );
 }
 
-async function analyzeImage(file: File, canvas: HTMLCanvasElement | null) {
-  const imageUrl = URL.createObjectURL(file);
-
-  try {
-    const image = await loadImage(imageUrl);
-    return analyzeLoadedImage(image, canvas);
-  } finally {
-    URL.revokeObjectURL(imageUrl);
-  }
-}
-
-/**
- * Same shape as `analyzeImage` but accepts a Blob — used after
- * `sanitizeUpload` has re-encoded the upload into a capped JPEG so the
- * palette reflects the stored pixels, not the user's original file.
- */
-async function analyzeBlob(blob: Blob, canvas: HTMLCanvasElement | null) {
-  const imageUrl = URL.createObjectURL(blob);
-  try {
-    const image = await loadImage(imageUrl);
-    return analyzeLoadedImage(image, canvas);
-  } finally {
-    URL.revokeObjectURL(imageUrl);
-  }
-}
-
-function analyzeLoadedImage(image: HTMLImageElement, canvas: HTMLCanvasElement | null): AnalysisResult {
-  if (!canvas) {
-    throw new Error("Canvas is unavailable.");
-  }
-
-  const { width, height } = getScaledDimensions(image.naturalWidth, image.naturalHeight);
-  canvas.width = width;
-  canvas.height = height;
-
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-
-  if (!context) {
-    throw new Error("2D canvas context is unavailable.");
-  }
-
-  context.clearRect(0, 0, width, height);
-  context.drawImage(image, 0, 0, width, height);
-
-  const imageData = context.getImageData(0, 0, width, height);
-  return analyzePixels(imageData.data, width, height);
-}
-
-// Cluster a raw RGBA pixel buffer into the original palette — the exact math
-// analyzeLoadedImage runs, but callable from cached pixels (sourcePixelsRef) so
-// "Full reset" can re-derive the very-first palette without decoding again.
-function analyzePixels(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number
-): AnalysisResult {
-  const sampled = samplePixels(data);
-
-  if (!sampled.length) {
-    throw new Error("No visible pixels were found in this image.");
-  }
-
-  const initialClusters = bucketPixels(sampled);
-  const distinctClusters = clusterByColorDistance(initialClusters, minColorDistance);
-  const colors = rebalanceCoverage(
-    distinctClusters
-      .sort((left, right) => right.pixelCount - left.pixelCount)
-      .map((cluster, index) => ({
-        id: `color-${index + 1}`,
-        hex: rgbToHex(cluster.rgb),
-        rgb: cluster.rgb,
-        pixelCount: cluster.pixelCount,
-        coveragePercent: 0
-      }))
-  );
-
-  return {
-    width,
-    height,
-    colors
-  };
-}
-
 function rebalanceCoverage(colors: PaletteColor[]) {
   const totalPixels = colors.reduce((sum, color) => sum + color.pixelCount, 0);
 
@@ -1976,132 +2003,6 @@ function rebalanceCoverage(colors: PaletteColor[]) {
     ...color,
     coveragePercent: totalPixels > 0 ? (color.pixelCount / totalPixels) * 100 : 0
   }));
-}
-
-function loadImage(src: string) {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("The image could not be decoded in this browser."));
-    image.src = src;
-  });
-}
-
-function getScaledDimensions(width: number, height: number) {
-  const scale = Math.min(1, maxDimension / Math.max(width, height));
-
-  return {
-    width: Math.max(1, Math.round(width * scale)),
-    height: Math.max(1, Math.round(height * scale))
-  };
-}
-
-type Cluster = {
-  rgb: [number, number, number];
-  pixelCount: number;
-};
-
-function samplePixels(data: Uint8ClampedArray) {
-  const totalPixels = data.length / 4;
-  const step = Math.max(1, Math.floor(totalPixels / maxSamplePixels));
-  const pixels: [number, number, number][] = [];
-
-  for (let index = 0; index < data.length; index += 4 * step) {
-    const alpha = data[index + 3] ?? 0;
-
-    if (alpha < 128) {
-      continue;
-    }
-
-    pixels.push([data[index] ?? 0, data[index + 1] ?? 0, data[index + 2] ?? 0]);
-  }
-
-  return pixels;
-}
-
-function bucketPixels(pixels: [number, number, number][]) {
-  const buckets = new Map<string, Cluster>();
-
-  for (const pixel of pixels) {
-    const quantized: [number, number, number] = [
-      quantizeChannel(pixel[0]),
-      quantizeChannel(pixel[1]),
-      quantizeChannel(pixel[2])
-    ];
-    const key = quantized.join("-");
-    const existing = buckets.get(key);
-
-    if (existing) {
-      existing.pixelCount += 1;
-      existing.rgb = weightedAverage(existing.rgb, existing.pixelCount - 1, pixel, 1);
-      continue;
-    }
-
-    buckets.set(key, {
-      rgb: pixel,
-      pixelCount: 1
-    });
-  }
-
-  return Array.from(buckets.values());
-}
-
-// Reduce raw quantized buckets to a palette by color difference, not coverage.
-// Walk buckets from most to least common; keep each one that is at least
-// `minDistance` (Euclidean RGB) from every color already kept, otherwise fold
-// its pixels into the nearest kept color. There is no popularity cut — a small
-// but distinct color survives because it is far from everything else, however
-// little of the image it covers. Count-ordered so the dominant color in each
-// neighborhood becomes its representative. O(N·K), N = buckets, K = kept.
-function clusterByColorDistance(clusters: Cluster[], minDistance: number): Cluster[] {
-  const kept: Cluster[] = [];
-
-  for (const cluster of [...clusters].sort((left, right) => right.pixelCount - left.pixelCount)) {
-    let nearest: Cluster | null = null;
-    let nearestDistance = Infinity;
-
-    for (const candidate of kept) {
-      const dx = candidate.rgb[0] - cluster.rgb[0];
-      const dy = candidate.rgb[1] - cluster.rgb[1];
-      const dz = candidate.rgb[2] - cluster.rgb[2];
-      const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      if (distance < nearestDistance) {
-        nearestDistance = distance;
-        nearest = candidate;
-      }
-    }
-
-    if (nearest && nearestDistance < minDistance) {
-      nearest.pixelCount += cluster.pixelCount;
-    } else {
-      kept.push({ rgb: [...cluster.rgb], pixelCount: cluster.pixelCount });
-    }
-  }
-
-  return kept;
-}
-
-function quantizeChannel(channel: number) {
-  return Math.round(channel / 12) * 12;
-}
-
-function weightedAverage(
-  left: [number, number, number],
-  leftWeight: number,
-  right: [number, number, number],
-  rightWeight: number
-): [number, number, number] {
-  const totalWeight = leftWeight + rightWeight;
-
-  return [
-    Math.round((left[0] * leftWeight + right[0] * rightWeight) / totalWeight),
-    Math.round((left[1] * leftWeight + right[1] * rightWeight) / totalWeight),
-    Math.round((left[2] * leftWeight + right[2] * rightWeight) / totalWeight)
-  ];
-}
-
-function rgbToHex([red, green, blue]: [number, number, number]) {
-  return `#${[red, green, blue].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
 }
 
 const FLUID_OUNCES_PER_GALLON = 128;
@@ -2137,60 +2038,6 @@ function formatPartialGridNotice(grid: GridSpec) {
     parts.push(`last row ${roundToTenths(grid.finalRowHeightFt)} ft tall`);
   }
   return parts.join("; ");
-}
-
-function flattenImageToPalette(
-  source: { data: Uint8ClampedArray; width: number; height: number },
-  palette: PaletteColor[],
-  transparentColorIds: Set<string> = new Set()
-): string | null {
-  if (typeof document === "undefined" || palette.length === 0) return null;
-  const out = new Uint8ClampedArray(source.data.length);
-  // sRGB Euclidean is close enough for paint-by-numbers flattening with small
-  // palettes and avoids a full Lab conversion per pixel. Perceptual accuracy
-  // is not the goal here — showing muralists roughly what their palette will
-  // render as is.
-  for (let i = 0; i < source.data.length; i += 4) {
-    const alpha = source.data[i + 3] ?? 0;
-    if (alpha < 128) {
-      out[i + 3] = 0;
-      continue;
-    }
-    const r = source.data[i] ?? 0;
-    const g = source.data[i + 1] ?? 0;
-    const b = source.data[i + 2] ?? 0;
-    let bestIndex = 0;
-    let bestDistance = Infinity;
-    for (let p = 0; p < palette.length; p += 1) {
-      const [pr, pg, pb] = palette[p]!.rgb;
-      const dr = r - pr;
-      const dg = g - pg;
-      const db = b - pb;
-      const d = dr * dr + dg * dg + db * db;
-      if (d < bestDistance) {
-        bestDistance = d;
-        bestIndex = p;
-      }
-    }
-    const nearest = palette[bestIndex]!;
-    if (transparentColorIds.has(nearest.id)) {
-      // Bare wall: leave the pixel show-through so the artist sees unpainted area.
-      out[i + 3] = 0;
-      continue;
-    }
-    const rgb = nearest.rgb;
-    out[i] = rgb[0];
-    out[i + 1] = rgb[1];
-    out[i + 2] = rgb[2];
-    out[i + 3] = 255;
-  }
-  const canvas = document.createElement("canvas");
-  canvas.width = source.width;
-  canvas.height = source.height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
-  ctx.putImageData(new ImageData(out, source.width, source.height), 0, 0);
-  return canvas.toDataURL("image/png");
 }
 
 function formatOunces(requiredGallons: number) {
@@ -2379,9 +2226,19 @@ function ProSettingsPanel({
     onSettingsChange({ ...settings, mixCoveragePercent: parsed });
   }
 
+  // The custom field edits a draft string so partial decimals ("0", "0.0")
+  // can be typed on the way to e.g. 0.03; only in-range values are committed.
+  const [residualDraft, setResidualDraft] = useState(String(settings.residualThreshold));
+  useEffect(() => {
+    setResidualDraft((current) =>
+      Number(current) === settings.residualThreshold ? current : String(settings.residualThreshold)
+    );
+  }, [settings.residualThreshold]);
+
   function setResidual(nextRaw: string) {
+    setResidualDraft(nextRaw);
     const parsed = Number(nextRaw);
-    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    if (!Number.isFinite(parsed) || parsed < CUSTOM_RESIDUAL_MIN || parsed > CUSTOM_RESIDUAL_MAX) return;
     onSettingsChange({
       ...settings,
       autoCombineSensitivity: "custom",
@@ -2437,13 +2294,15 @@ function ProSettingsPanel({
 
           {settings.autoCombineSensitivity === "custom" ? (
             <label className="field pro-settings-custom">
-              <span>Residual threshold (0-100, RGB units)</span>
+              <span>
+                Residual threshold ({CUSTOM_RESIDUAL_MIN}-{CUSTOM_RESIDUAL_MAX}, OKLab distance; about 0.02 is a just-noticeable difference)
+              </span>
               <input
                 type="number"
-                min="1"
-                max="100"
-                step="1"
-                value={settings.residualThreshold}
+                min={CUSTOM_RESIDUAL_MIN}
+                max={CUSTOM_RESIDUAL_MAX}
+                step="0.005"
+                value={residualDraft}
                 onChange={(event) => setResidual(event.target.value)}
               />
             </label>

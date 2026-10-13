@@ -67,6 +67,11 @@ export type EditorPaletteColor = {
   rgb: [number, number, number];
   pixelCount: number;
   coveragePercent: number;
+  /**
+   * When true, Auto-combine never absorbs or mixes this color away. Other
+   * unlocked colors can still absorb into it.
+   */
+  locked?: boolean;
 };
 
 // Current palette-JSON schema version. Stamped onto every write; documents
@@ -110,6 +115,10 @@ export function toBackendPaletteColors(
     };
     if (classification) {
       backendColor.classification = classification;
+    }
+    if (color.locked) {
+      // Omit when false so unlocked palettes serialise exactly as before.
+      backendColor.locked = true;
     }
     return backendColor;
   });
@@ -226,7 +235,9 @@ function toEditorPaletteColors(
     hex: color.hex.toUpperCase(),
     rgb: hexToRgb(color.hex),
     pixelCount: Math.max(1, Math.round(color.coverage * SCALE)),
-    coveragePercent: color.coverage * 100
+    coveragePercent: color.coverage * 100,
+    // Legacy projects (saved before locks existed) hydrate unlocked.
+    ...(color.locked === true ? { locked: true } : {})
   }));
 }
 

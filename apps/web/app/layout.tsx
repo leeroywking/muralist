@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { HeaderSessionLink } from "./HeaderSessionLink";
+import { ThemeToggle } from "./ThemeToggle";
+import { themeInitScript } from "./themeScript";
 import "./styles.css";
 
 export const metadata: Metadata = {
@@ -12,7 +14,12 @@ export default function RootLayout({
   children
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    // themeInitScript sets data-theme before hydration, so the client <html>
+    // intentionally differs from the server markup.
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
       <body>
         <header className="site-header">
           <Link className="brand-link" href="/">
@@ -22,6 +29,7 @@ export default function RootLayout({
             <Link href="/">App</Link>
             <Link href="/about">About</Link>
             <HeaderSessionLink />
+            <ThemeToggle />
           </nav>
         </header>
         {children}
