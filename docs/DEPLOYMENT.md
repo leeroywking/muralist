@@ -61,3 +61,15 @@ The repo is still structured for an AWS move later:
 - API can move to ECS, App Runner, or Lambda
 - Mobile artifacts can feed later distribution tooling
 - Config and domain logic are isolated from the deployment target
+
+## DigitalOcean Build: npm Engines Pin (2026-10-12)
+
+DigitalOcean App Platform builds `api` and `web` from `main` with the Heroku-style Node buildpack. The buildpack installs the **newest npm that satisfies `engines.npm`** in the root `package.json`, and then invokes it with `--unsafe-perm`.
+
+npm 12 removed `--unsafe-perm`. With the open-ended range `>=9.0.0`, the 2026-10-12 deploy installed npm 12.2.0, and both components failed immediately with `npm error Unknown cli flag: --unsafe-perm`. Production kept serving the previous ACTIVE deployment.
+
+The fix (PR #18) is `"npm": ">=9.0.0 <12"`. Do not widen this cap until the buildpack stops passing `--unsafe-perm`.
+
+To triage a failed deploy:
+1. Run `doctl apps list-deployments <app-id>` to see each deployment's phase.
+2. Run `doctl apps logs <app-id> <component> --deployment <id> --type build` to read the build output.
