@@ -181,3 +181,26 @@ Tests: `packages/core/test/index.test.ts` (background never a partner/target/abs
   - The analysis modules use no canvas, ImageBitmap or `<img>`. The suite itself runs in Node, which has no DOM.
 - The P3 profile is authored in-test (`packages/core/test/iccProfileBuilder.ts`, fixture `display-p3-authored.icc`). The user's artwork is not committed.
 - `npx tsx apps/web/scripts/analyze-file.ts <image>` runs the exact production pipeline in Node, to compare against the app.
+
+## Shipped to production (2026-10-12)
+
+PR #13 merged to `main` as `a85ea08`. It already contained #16 (site theme, see `docs/plans/site-theme.md`) and #17 (confirm modal, see `docs/plans/confirm-modal.md`), so GitHub marked both as merged too. Variant B (#14, `feat/mix-spectral`) was not merged.
+
+- The first DigitalOcean deploy failed before any of our build steps ran. The buildpack had installed npm 12, which rejects `--unsafe-perm`. PR #18 (`2b7cccd`) caps `engines.npm` below 12, and the next deploy went ACTIVE. Details are in `docs/DEPLOYMENT.md`.
+- Post-deploy check: FlowerRepeat uploaded to muraliste.com in headless Chrome gives top chips `#2E3E52 #8AC6BD #E5B5BD #E699A2 #46AEAF #F8D35C #F8FAF9`. These are identical to the preview and to `analyze-file.ts`. `api.muraliste.com/health` returns 200.
+- The Mobile Preview Release on the merge commit failed its iOS simulator job. The cause is a Pods `fmt` consteval compile error under the runner's newer Xcode, and no mobile code changed. The Android release published.
+
+### Open follow-ups (not started)
+- **Mint vs white + teal (FlowerRepeat `#8AC6BD`).** Aggressive picks `#46AEAF + #F8D35C` over white + teal. Proposed changes:
+  - judge a partner's coverage including the near-duplicates merged into it;
+  - make white and black always eligible as partners;
+  - add a ratio-aware hue check;
+  - possibly tighten Aggressive.
+
+  These are awaiting the user's go-ahead.
+- **SVG analysis** still reads pixels back from a canvas. Candidate fix: `@resvg/resvg-wasm`.
+- **Safari is unverified.** It should reproduce the hexes above exactly.
+- **Orientation:** PNG `eXIf` orientation is not applied.
+- **Stale test-plan hexes:** PR #13's test plan uses pre-pipeline values (e.g. `#FAFBFB` is now `#F8FAF9`, `#F5C233` is now `#F5C131`).
+- **CI gaps:** the root `npm run test` does not run the web workspace tests, and `npm run lint` has no lint config.
+- **iOS simulator build:** the `fmt` / Xcode failure above.
