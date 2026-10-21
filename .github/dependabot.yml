@@ -1,0 +1,49 @@
+# Dependabot version + security updates.
+#
+# Patch/minor PRs for most packages are auto-merged by
+# .github/workflows/dependabot-automerge.yml once CI (`validate`) passes.
+# The `frameworks` group (Expo, React Native, Next.js, Fastify, React) is
+# never auto-merged: those carry tracked advisories (docs/SECURITY_REVIEW.md)
+# and version bumps there are their own task per AGENTS.md.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      frameworks:
+        patterns:
+          - "expo"
+          - "expo-*"
+          - "@expo/*"
+          - "react-native"
+          - "react-native-*"
+          - "next"
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+          - "fastify"
+          - "fastify-*"
+          - "@fastify/*"
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "chore(ci)"
