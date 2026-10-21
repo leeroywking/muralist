@@ -27,6 +27,13 @@ jobs:
           steps.meta.outputs.dependency-group != 'frameworks' &&
           steps.meta.outputs.update-type != 'version-update:semver-major'
         env:
+          DEPS: ${{ steps.meta.outputs.dependency-names }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr merge --auto --squash "$PR_URL"
+        run: |
+          # Security-update PRs are not grouped, so also guard by name.
+          if echo "$DEPS" | tr ',' '\n' | sed 's/^ *//' | grep -Eq '^(expo|expo-.*|@expo/.*|react-native.*|next|react|react-dom|@types/react(-dom)?|fastify.*|@fastify/.*)$'; then
+            echo "Framework dependency in PR ($DEPS); leaving for human review."
+            exit 0
+          fi
+          gh pr merge --auto --squash "$PR_URL"
