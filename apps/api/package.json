@@ -17,7 +17,7 @@
     "@muralist/config": "0.1.0",
     "@muralist/core": "0.1.0",
     "better-auth": "^1.6.8",
-    "fastify": "^4.29.1",
+    "fastify": "^5.12.5",
     "fastify-plugin": "^4.5.1",
     "mongodb": "^7.2.0",
     "zod": "^4.3.6"
