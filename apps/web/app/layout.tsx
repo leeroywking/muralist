@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { HeaderSessionLink } from "./HeaderSessionLink";
+import { SiteFooter } from "./SiteFooter";
 import { ThemeToggle } from "./ThemeToggle";
 import { themeInitScript } from "./themeScript";
 import "./styles.css";
@@ -33,6 +34,7 @@ export default function RootLayout({
           </nav>
         </header>
         {children}
+        <SiteFooter />
       </body>
     </html>
   );
