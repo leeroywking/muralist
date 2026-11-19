@@ -60,3 +60,10 @@ This review covers the current foundation state of the repository on April 7, 20
 ## Current Verdict
 
 The foundation is acceptable to continue development, provided the guest-mode persistence boundary remains explicit and enforced in every future write endpoint.
+
+## 2026-11-19 Update — Expo SDK 58 upgrade
+
+- **Change:** `apps/mobile` moved from Expo SDK 52 / React Native 0.76 / React 18 to Expo SDK 58 / React Native 0.88.1 / React 19.3. `apps/web` moved to React 19.3 as well, so the workspace has a single React version (Next stays on 15.5.14). CI moved to Node 22, which SDK 58 requires.
+- **Why now:** the iOS simulator build had failed on every main push since 2026-10-13. GitHub's `macos-latest` runner moved to Xcode 26, and RN 0.76's bundled `fmt` pod does not compile under it.
+- **Effect on the High finding above:** `npm audit` went from 46 advisories (28 high/critical) to 20 (14 high/critical). The `@expo/cli`, `@xmldom/xmldom`, `tar`, `cacache`, `ws`, `image-size`, `node-forge` (partly) and `compression` entries from the Expo 52 tree are gone. Still present via Expo's CLI/build tooling, build-time only and not shipped in the app: `node-forge`, `shell-quote`, `browserslist`. The Fastify-line advisories are unchanged and still tracked separately.
+- **Known deviation:** Expo SDK 58 recommends TypeScript ~6.0. The repo stays on 5.9 (`expo.install.exclude` in `apps/mobile/package.json`) because a TS 6 move is repo-wide and touches `tsconfig` files. Mobile typechecks clean on 5.9.
