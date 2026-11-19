@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { SignInButtons } from "../SignInButtons";
 
 export const metadata = {
@@ -21,6 +22,11 @@ export default function SignInPage() {
           </p>
         </div>
         <SignInButtons />
+        <p className="signin-legal">
+          By signing in you agree to the <Link href="/terms">Terms of Service</Link> and{" "}
+          <Link href="/privacy">Privacy Policy</Link>. Saved projects store a reduced copy of your image and a
+          thumbnail; analysis itself runs in your browser.
+        </p>
       </section>
     </main>
   );
