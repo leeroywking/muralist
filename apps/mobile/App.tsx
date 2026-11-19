@@ -1,28 +1,31 @@
 import { StatusBar } from "expo-status-bar";
-import { SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 
 const providers = ["Google", "Apple", "Facebook", "Guest"];
 
 export default function App() {
   return (
-    <SafeAreaView style={styles.screen}>
-      <StatusBar style="dark" />
-      <View style={styles.hero}>
-        <Text style={styles.eyebrow}>Prototype Foundation</Text>
-        <Text style={styles.title}>Muralist</Text>
-        <Text style={styles.copy}>
-          Shared mobile groundwork for OAuth-first access, guest mode, palette
-          reduction, and configurable paint-brand planning assumptions.
-        </Text>
-        <View style={styles.providerRow}>
-          {providers.map((provider) => (
-            <View key={provider} style={styles.pill}>
-              <Text style={styles.pillText}>{provider}</Text>
-            </View>
-          ))}
+    <SafeAreaProvider>
+      <SafeAreaView style={styles.screen}>
+        <StatusBar style="dark" />
+        <View style={styles.hero}>
+          <Text style={styles.eyebrow}>Prototype Foundation</Text>
+          <Text style={styles.title}>Muralist</Text>
+          <Text style={styles.copy}>
+            Shared mobile groundwork for OAuth-first access, guest mode, palette
+            reduction, and configurable paint-brand planning assumptions.
+          </Text>
+          <View style={styles.providerRow}>
+            {providers.map((provider) => (
+              <View key={provider} style={styles.pill}>
+                <Text style={styles.pillText}>{provider}</Text>
+              </View>
+            ))}
+          </View>
         </View>
-      </View>
-    </SafeAreaView>
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 
