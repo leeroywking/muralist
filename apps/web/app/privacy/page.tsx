@@ -95,11 +95,16 @@ export default function PrivacyPage() {
         <h2>Who processes data for us</h2>
         <ul>
           <li>
-            <strong>DigitalOcean</strong>: application and database hosting.
+            <strong>Cloud hosting provider</strong>: runs the application and stores the database in US data
+            centers.
           </li>
           <li>
-            <strong>Cloudflare</strong>: DNS, content delivery, security, and email forwarding for our contact
-            addresses.
+            <strong>Network and security provider</strong>: DNS, content delivery, attack protection, and forwarding
+            mail sent to our contact addresses.
+          </li>
+          <li>
+            These providers process data only on our instructions to run Muraliste. You can ask{" "}
+            <a href={`mailto:${CONTACT.privacy}`}>{CONTACT.privacy}</a> for the current list.
           </li>
           <li>
             <strong>Your sign-in provider</strong> (Google, Apple, Facebook, or Adobe): confirms your identity under
