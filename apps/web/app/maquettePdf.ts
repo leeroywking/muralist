@@ -46,6 +46,10 @@ export async function downloadMaquettePdf(input: DownloadMaquettePdfInput): Prom
   const { model, originalImageUrl, reducedImageUrl } = input;
 
   const doc = await PDFDocument.create();
+  // pdf-lib stamps its own name + GitHub URL as Producer/Creator by default
+  // (site-audit 2026-11-18 O4).
+  doc.setProducer("Muraliste");
+  doc.setCreator("Muraliste");
   const helvetica = await doc.embedFont(StandardFonts.Helvetica);
   const helveticaBold = await doc.embedFont(StandardFonts.HelveticaBold);
 

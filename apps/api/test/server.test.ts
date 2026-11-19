@@ -12,10 +12,21 @@ test("health endpoint responds", async () => {
   });
 
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.json(), {
-    ok: true,
-    service: "muralist-api"
+  assert.deepEqual(response.json(), { ok: true });
+
+  await app.close();
+});
+
+test("unknown routes return a generic 404 body that doesn't name the framework", async () => {
+  const app = await buildServer({ appBaseURL: TEST_BASE_URL });
+  const response = await app.inject({
+    method: "GET",
+    url: "/definitely-not-a-route"
   });
+
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(response.json(), { error: "NOT_FOUND" });
+  assert.doesNotMatch(response.body, /Route GET/);
 
   await app.close();
 });
