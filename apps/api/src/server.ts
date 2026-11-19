@@ -225,6 +225,13 @@ export async function buildServer(opts: BuildServerOptions) {
     reply.send(error);
   });
 
+  // Unknown routes: Fastify's default 404 body ("Route GET:/x not found")
+  // fingerprints the framework (site-audit 2026-11-18 O2). Match the
+  // `{ error: CODE }` shape the rest of the API uses.
+  app.setNotFoundHandler((_request, reply) => {
+    reply.code(404).send({ error: "NOT_FOUND" });
+  });
+
   // 8. Product routes — only wire when the prerequisites are present.
   if (opts.mongo && opts.auth && opts.tierConfig) {
     await app.register(meRoutes);
@@ -248,10 +255,9 @@ export async function buildServer(opts: BuildServerOptions) {
   });
 
   // 6. Existing endpoints — unchanged contract.
-  app.get("/health", async () => ({
-    ok: true,
-    service: "muralist-api"
-  }));
+  // Liveness only: DO's health_check reads the status code. Don't echo
+  // internal service names (site-audit 2026-11-18 O3).
+  app.get("/health", async () => ({ ok: true }));
 
   app.get("/api/auth/capabilities", async () => ({
     auth: getAuthCapabilities()
